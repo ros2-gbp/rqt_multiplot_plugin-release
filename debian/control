@@ -1,0 +1,12 @@
+Source: ros-lyrical-rqt-multiplot
+Section: misc
+Priority: optional
+Maintainer: "Samuel Bachmann" <sbachmann@anybotics.com>
+Build-Depends: debhelper (>= 9.0.0), clang-tidy <!nocheck>, libboost-dev, qt6-base-dev, qt6-svg-dev, ros-lyrical-ament-cmake, ros-lyrical-ament-cmake-clang-format <!nocheck>, ros-lyrical-ament-cmake-gtest <!nocheck>, ros-lyrical-ament-index-cpp, ros-lyrical-builtin-interfaces <!nocheck>, ros-lyrical-diagnostic-msgs <!nocheck>, ros-lyrical-fastcdr, ros-lyrical-geometry-msgs <!nocheck>, ros-lyrical-pluginlib, ros-lyrical-qt-gui-cpp, ros-lyrical-rcl, ros-lyrical-rclcpp, ros-lyrical-rmw-cyclonedds-cpp <!nocheck>, ros-lyrical-rmw-fastrtps-cpp <!nocheck>, ros-lyrical-rmw-zenoh-cpp <!nocheck>, ros-lyrical-ros-babel-fish, ros-lyrical-rosbag2-cpp, ros-lyrical-rosbag2-storage, ros-lyrical-rosbag2-storage-default-plugins, ros-lyrical-rosbag2-storage-mcap, ros-lyrical-rosbag2-storage-mcap <!nocheck>, ros-lyrical-rosidl-buffer, ros-lyrical-rosidl-runtime-c, ros-lyrical-rosidl-runtime-cpp, ros-lyrical-rosidl-typesupport-fastrtps-cpp, ros-lyrical-rosidl-typesupport-introspection-cpp, ros-lyrical-rqt-gui, ros-lyrical-rqt-gui-cpp, ros-lyrical-sensor-msgs <!nocheck>, ros-lyrical-std-msgs <!nocheck>, ros-lyrical-test-msgs <!nocheck>, ros-lyrical-type-description-interfaces, ros-lyrical-ros-workspace
+Homepage: https://index.ros.org/p/rqt_multiplot/#lyrical
+Standards-Version: 3.9.2
+
+Package: ros-lyrical-rqt-multiplot
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-dev, qt6-base-dev, qt6-svg-dev, ros-lyrical-ament-index-cpp, ros-lyrical-diagnostic-msgs, ros-lyrical-fastcdr, ros-lyrical-geometry-msgs, ros-lyrical-pluginlib, ros-lyrical-qt-gui-cpp, ros-lyrical-rcl, ros-lyrical-rclcpp, ros-lyrical-rclpy, ros-lyrical-ros-babel-fish, ros-lyrical-rosbag2-cpp, ros-lyrical-rosbag2-storage, ros-lyrical-rosbag2-storage-default-plugins, ros-lyrical-rosbag2-storage-mcap, ros-lyrical-rosidl-buffer, ros-lyrical-rosidl-runtime-c, ros-lyrical-rosidl-runtime-cpp, ros-lyrical-rosidl-typesupport-fastrtps-cpp, ros-lyrical-rosidl-typesupport-introspection-cpp, ros-lyrical-rqt-gui, ros-lyrical-rqt-gui-cpp, ros-lyrical-sensor-msgs, ros-lyrical-std-msgs, ros-lyrical-type-description-interfaces, ros-lyrical-ros-workspace
+Description: rqt_multiplot provides a GUI plugin for visualizing numeric values in multiple 2D plots using the Qwt plotting backend.
