@@ -1,0 +1,153 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#include <QAbstractItemView>
+#include <QKeyEvent>
+#include <QLineEdit>
+
+#include "rqt_multiplot/MessageTopicComboBox.hpp"
+
+namespace rqt_multiplot {
+
+MessageTopicComboBox::MessageTopicComboBox(QWidget* parent)
+    : MatchFilterComboBox(parent), registry_(new MessageTopicRegistry(this)), isUpdating_(false) {
+  connect(registry_, SIGNAL(updateStarted()), this, SLOT(registryUpdateStarted()));
+  connect(registry_, SIGNAL(updateFinished(bool)), this, SLOT(registryUpdateFinished()));
+
+  connect(this, SIGNAL(currentIndexChanged(int)), this, SLOT(currentIndexChanged(int)));
+
+  if (rqt_multiplot::MessageTopicRegistry::isUpdating()) {
+    registryUpdateStarted();
+  } else if (!rqt_multiplot::MessageTopicRegistry::isEmpty()) {
+    registryUpdateFinished();
+  } else {
+    rqt_multiplot::MessageTopicRegistry::update();
+  }
+}
+
+MessageTopicComboBox::~MessageTopicComboBox() = default;
+
+void MessageTopicComboBox::setEditable(bool editable) {
+  if (editable != QComboBox::isEditable()) {
+    MatchFilterComboBox::setEditable(editable);
+
+    if (lineEdit() != nullptr) {
+      blockSignals(true);
+
+      int index = findText(currentTopic_);
+
+      if (index < 0) {
+        setEditText(currentTopic_);
+      } else {
+        setCurrentIndex(index);
+      }
+
+      blockSignals(false);
+
+      connect(lineEdit(), SIGNAL(editingFinished()), this, SLOT(lineEditEditingFinished()));
+    }
+  }
+}
+
+void MessageTopicComboBox::setCurrentTopic(const QString& topic) {
+  if (topic != currentTopic_) {
+    currentTopic_ = topic;
+
+    int index = findText(topic);
+
+    if (index < 0) {
+      setEditText(topic);
+    } else {
+      setCurrentIndex(index);
+    }
+
+    emit currentTopicChanged(topic);
+  }
+}
+
+QString MessageTopicComboBox::getCurrentTopic() const {
+  return currentTopic_;
+}
+
+QString MessageTopicComboBox::getCurrentTopicType() const {
+  int index = findText(currentTopic_);
+
+  if (index >= 0) {
+    return itemData(index).toString();
+  } else {
+    return QString();
+  }
+}
+
+bool MessageTopicComboBox::isUpdating() const {
+  return isUpdating_;
+}
+
+bool MessageTopicComboBox::isCurrentTopicRegistered() const {
+  return (findText(currentTopic_) >= 0);
+}
+
+void MessageTopicComboBox::updateTopics() {
+  rqt_multiplot::MessageTopicRegistry::update();
+}
+
+void MessageTopicComboBox::registryUpdateStarted() {
+  setEnabled(false);
+
+  isUpdating_ = true;
+  emit updateStarted();
+
+  clear();
+}
+
+void MessageTopicComboBox::registryUpdateFinished() {
+  QMap<QString, QString> topics = rqt_multiplot::MessageTopicRegistry::getTopics();
+
+  blockSignals(true);
+
+  for (QMap<QString, QString>::const_iterator it = topics.begin(); it != topics.end(); ++it) {
+    addItem(it.key(), it.value());
+  }
+
+  int index = findText(currentTopic_);
+
+  if (index < 0) {
+    setEditText(currentTopic_);
+  } else {
+    setCurrentIndex(index);
+  }
+
+  blockSignals(false);
+
+  isUpdating_ = false;
+  emit updateFinished();
+
+  setEnabled(true);
+}
+
+void MessageTopicComboBox::currentIndexChanged(int index) {
+  if (index >= 0) {
+    setCurrentTopic(itemText(index));
+  }
+}
+
+void MessageTopicComboBox::lineEditEditingFinished() {
+  setCurrentTopic(currentText());
+}
+
+}  // namespace rqt_multiplot

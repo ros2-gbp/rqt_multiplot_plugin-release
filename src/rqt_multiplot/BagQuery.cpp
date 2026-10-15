@@ -1,0 +1,93 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#include <QApplication>
+#include <QCoreApplication>
+#include <QEvent>
+
+#include "rqt_multiplot/MessageEvent.hpp"
+#include "rqt_multiplot/MessageFieldAccess.hpp"
+
+#include "rqt_multiplot/BagQuery.hpp"
+
+namespace rqt_multiplot {
+namespace {
+
+QEvent::Type unusedQueryEvent() {
+  static const int type = QEvent::registerEventType();
+  return static_cast<QEvent::Type>(type);
+}
+
+}  // namespace
+
+BagQuery::BagQuery(QObject* parent) : QObject(parent) {}
+
+BagQuery::~BagQuery() {
+  deleting_ = true;
+}
+
+bool BagQuery::event(QEvent* event) {
+  if (event->type() == MessageEvent::Type) {
+    auto* messageEvent = dynamic_cast<MessageEvent*>(event);
+
+    emit messageRead(messageEvent->getTopic(), messageEvent->getMessage());
+
+    return true;
+  }
+
+  if (event->type() == unusedQueryEvent()) {
+    destroyIfUnused();
+    return true;
+  }
+
+  return QObject::event(event);
+}
+
+void BagQuery::callback(const QString& topic, const QString& type, const rclcpp::SerializedMessage& serialized, const rclcpp::Time& time) {
+  Message message;
+  message.setReceiptTime(time);
+  message.setCompound(deserializeMessage(type.toStdString(), serialized));
+  message.setSerializedSize(serialized.size());
+
+  auto* messageEvent = new MessageEvent(topic, message);
+
+  QApplication::postEvent(this, messageEvent);
+}
+
+void BagQuery::destroyIfUnused() {
+  if (deleting_) {
+    return;
+  }
+  if (receivers(QMetaObject::normalizedSignature(SIGNAL(messageRead(const QString&, const Message&)))) != 0) {
+    return;
+  }
+
+  emit aboutToBeDestroyed();
+  deleteLater();
+}
+
+void BagQuery::disconnectNotify(const QMetaMethod& /*signal*/) {
+  // Qt calls this with the QObject mutex held, including from ~QObject.
+  // receivers(), emit, and deleteLater() lock that mutex again.
+  if (deleting_ || QCoreApplication::instance() == nullptr) {
+    return;
+  }
+  QCoreApplication::postEvent(this, new QEvent(unusedQueryEvent()));
+}
+
+}  // namespace rqt_multiplot

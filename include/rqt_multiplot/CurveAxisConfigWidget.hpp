@@ -1,0 +1,133 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#pragma once
+
+#include <QList>
+#include <QMap>
+#include <QStringList>
+#include <QWidget>
+
+#include "rqt_multiplot/CurveAxisConfig.hpp"
+#include "rqt_multiplot/Message.hpp"
+#include "rqt_multiplot/StatusWidget.hpp"
+
+namespace Ui {
+
+class CurveAxisConfigWidget;
+
+}
+
+namespace rqt_multiplot {
+
+class MessageSubscriberRegistry;
+
+class CurveAxisConfigWidget : public QWidget {
+  Q_OBJECT
+ public:
+  explicit CurveAxisConfigWidget(QWidget* parent = nullptr);
+  ~CurveAxisConfigWidget() override;
+
+  void setConfig(CurveAxisConfig* config);
+  CurveAxisConfig* getConfig() const;
+
+  static void updateTopics();
+  static void updateTypes();
+  void updateFields();
+  void applySnapshotPairingError(const QString& error);
+  StatusWidget::Role getFieldStatusRole() const;
+  QString getFieldStatusMessage() const;
+  QStringList currentErrors() const;
+
+ signals:
+  void validationChanged();
+
+ private:
+  Ui::CurveAxisConfigWidget* ui_;
+
+  CurveAxisConfig* config_;
+  QString pairingError_;
+  MessageSubscriberRegistry* diagnosticRegistry_;
+  QString diagnosticTopic_;
+  struct DiagnosticSuggestion {
+    QString hardwareId;
+    QString key;
+  };
+  QMap<QString, QList<DiagnosticSuggestion>> diagnosticSuggestions_;
+
+  bool validateTopic();
+  bool validateType();
+  bool validateField();
+  bool validateScale();
+  bool applyFieldStatusAfterLocalOk();
+  bool isSyntheticFieldType() const;
+  bool isDiagnosticArrayType() const;
+  void syncLabelFromZero();
+  void updateFieldWidgetEnabled();
+  void updateUnitConversionWidgetsEnabled();
+  void updateDiagnosticSubscription();
+  void refreshDiagnosticHardwareItems();
+  void refreshDiagnosticKeyItems();
+  void clearDiagnosticSuggestions();
+  void setSyntheticFieldType(int state, CurveAxisConfig::FieldType fieldType);
+  void setUnitConversionCheckbox(int state, CurveAxisConfig::UnitConversion unitConversion);
+
+ private slots:
+  void configTopicChanged(const QString& topic);
+  void configTypeChanged(const QString& type);
+  void configFieldTypeChanged(int fieldType);
+  void configFieldChanged(const QString& field);
+  void configDiagnosticStatusChanged(const QString& status);
+  void configDiagnosticKeyChanged(const QString& key);
+  void configDiagnosticHardwareIdChanged(const QString& hardwareId);
+  void configScaleConfigChanged();
+  void configUnitConversionChanged(int unitConversion);
+  void configTopicMetricChanged(int metric);
+  void configTopicMetricWindowChanged(int window);
+
+  void comboBoxTopicUpdateStarted();
+  void comboBoxTopicUpdateFinished();
+  void comboBoxTopicCurrentTopicChanged(const QString& topic);
+
+  void comboBoxTypeUpdateStarted();
+  void comboBoxTypeUpdateFinished();
+  void comboBoxTypeCurrentTypeChanged(const QString& type);
+
+  void widgetFieldLoadingStarted();
+  void widgetFieldLoadingFinished();
+  void widgetFieldLoadingFailed(const QString& error);
+  void widgetFieldConnecting(const QString& topic);
+  void widgetFieldConnected(const QString& topic);
+  void widgetFieldConnectionTimeout(const QString& topic, double timeout);
+  void widgetFieldCurrentFieldChanged(const QString& field);
+
+  void checkBoxFieldReceiptTimeStateChanged(int state);
+  void checkBoxFieldArrayIndexStateChanged(int state);
+  void checkBoxFieldDiagnosticValueStateChanged(int state);
+  void checkBoxFieldTopicMetricStateChanged(int state);
+  void comboBoxTopicMetricActivated(int index);
+  void spinBoxTopicMetricWindowValueChanged(int window);
+  void comboBoxDiagnosticStatusEdited(const QString& status);
+  void comboBoxDiagnosticKeyEdited(const QString& key);
+  void comboBoxDiagnosticHardwareIdEdited(const QString& hardwareId);
+  void diagnosticMessageReceived(const QString& topic, const Message& message);
+  void checkBoxRadiansToDegreesStateChanged(int state);
+  void checkBoxDegreesToRadiansStateChanged(int state);
+};
+
+}  // namespace rqt_multiplot

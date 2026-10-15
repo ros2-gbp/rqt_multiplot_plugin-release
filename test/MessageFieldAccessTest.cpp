@@ -1,0 +1,526 @@
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include <geometry_msgs/msg/twist.hpp>
+#include <rclcpp/serialization.hpp>
+#include <std_msgs/msg/float64.hpp>
+#include <std_msgs/msg/header.hpp>
+
+#include <gtest/gtest.h>
+#include <ros_babel_fish/babel_fish.hpp>
+#include <ros_babel_fish/exceptions/babel_fish_exception.hpp>
+#include <ros_babel_fish/messages/array_message.hpp>
+
+#include "rqt_multiplot/MessageFieldAccess.hpp"
+
+namespace {
+
+using rqt_multiplot::collectArrayLengths;
+using rqt_multiplot::createMessagePrototype;
+using rqt_multiplot::deserializeMessage;
+using rqt_multiplot::DiagnosticStatusKey;
+using rqt_multiplot::diagnosticStatusKeys;
+using rqt_multiplot::fieldTypeFromMessage;
+using rqt_multiplot::getMember;
+using rqt_multiplot::getNumericValue;
+using rqt_multiplot::getStamp;
+using rqt_multiplot::hasHeader;
+using rqt_multiplot::isDiagnosticArrayTypeName;
+using rqt_multiplot::isNumericMessageType;
+using rqt_multiplot::isPlottableFieldPath;
+using rqt_multiplot::isWildcardFieldPath;
+using rqt_multiplot::normalizeTypeName;
+using rqt_multiplot::tryGetDiagnosticValue;
+using rqt_multiplot::tryGetNumericSeries;
+using rqt_multiplot::tryGetNumericValue;
+
+// ros_babel_fish 4.x push_back() casts to std::vector. Lyrical char[] and uint8[] are
+// rosidl::Buffer, so that cast segfaults. resize() and assign() use introspection pointers.
+template <typename Array, typename Value>
+void appendArrayElement(Array& array, Value value) {
+  const std::size_t index = array.size();
+  array.resize(index + 1);
+  array.assign(index, value);
+}
+
+TEST(MessageFieldAccess, normalizesRos1TypeNames) {
+  EXPECT_EQ(normalizeTypeName("std_msgs/Header"), "std_msgs/msg/Header");
+  EXPECT_EQ(normalizeTypeName("std_msgs/msg/Header"), "std_msgs/msg/Header");
+  EXPECT_EQ(normalizeTypeName("std_srvs/srv/Empty"), "std_srvs/srv/Empty");
+  EXPECT_EQ(normalizeTypeName(""), "");
+}
+
+TEST(MessageFieldAccess, stripsInterfaceFilenameExtensions) {
+  EXPECT_EQ(normalizeTypeName("std_msgs/msg/Header.msg"), "std_msgs/msg/Header");
+  EXPECT_EQ(normalizeTypeName("std_msgs/Header.msg"), "std_msgs/msg/Header");
+  EXPECT_EQ(normalizeTypeName("std_msgs/msg/Header.idl"), "std_msgs/msg/Header");
+}
+
+TEST(MessageFieldAccess, extractsNestedNumericFields) {
+  auto fish = ros_babel_fish::BabelFish::make_shared();
+  auto message = fish->create_message_shared("geometry_msgs/msg/Twist");
+  (*message)["linear"]["x"] = 1.25;
+  (*message)["linear"]["y"] = -0.5;
+  (*message)["angular"]["z"] = 3.0;
+
+  const auto* linearX = getMember(*message, "linear/x");
+  ASSERT_NE(linearX, nullptr);
+  EXPECT_TRUE(isNumericMessageType(*linearX));
+  EXPECT_DOUBLE_EQ(getNumericValue(*linearX), 1.25);
+  EXPECT_DOUBLE_EQ(getNumericValue(*getMember(*message, "angular/z")), 3.0);
+
+  double value = 0.0;
+  ASSERT_TRUE(tryGetNumericValue(*message, "linear/x", value));
+  EXPECT_DOUBLE_EQ(value, 1.25);
+}
+
+TEST(MessageFieldAccess, readsHeaderStamp) {
+  auto fish = ros_babel_fish::BabelFish::make_shared();
+  auto message = fish->create_message_shared("std_msgs/msg/Header");
+  ASSERT_TRUE(hasHeader(*message) || message->containsKey("stamp"));
+
+  (*message)["stamp"] = rclcpp::Time(12, 500000000, RCL_ROS_TIME);
+  const auto stamp = getStamp((*message)["stamp"]);
+  EXPECT_DOUBLE_EQ(stamp.seconds(), 12.5);
+}
+
+TEST(MessageFieldAccess, marksHeaderStampAsTime) {
+  auto prototype = createMessagePrototype("std_msgs/msg/Header");
+  ASSERT_NE(prototype, nullptr);
+
+  const auto fieldType = fieldTypeFromMessage(*prototype);
+  bool foundStamp = false;
+  for (const auto& member : fieldType.members) {
+    if (member.first == "stamp") {
+      foundStamp = true;
+      EXPECT_TRUE(member.second.isTime);
+      EXPECT_TRUE(member.second.isNumeric);
+    }
+  }
+  EXPECT_TRUE(foundStamp);
+}
+
+TEST(MessageFieldAccess, buildsFieldTypeTree) {
+  auto prototype = createMessagePrototype("geometry_msgs/msg/Twist");
+  ASSERT_NE(prototype, nullptr);
+
+  const auto fieldType = fieldTypeFromMessage(*prototype);
+  EXPECT_TRUE(fieldType.isMessage());
+
+  bool foundLinearX = false;
+  for (const auto& member : fieldType.members) {
+    if (member.first == "linear") {
+      EXPECT_TRUE(member.second.isMessage());
+      for (const auto& nested : member.second.members) {
+        if (nested.first == "x") {
+          foundLinearX = nested.second.isNumeric;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(foundLinearX);
+}
+
+TEST(MessageFieldAccess, readsDynamicPrimitiveArrayElements) {
+  auto message = createMessagePrototype("sensor_msgs/msg/JointState");
+  ASSERT_NE(message, nullptr);
+
+  auto& position = (*message)["position"].as<ros_babel_fish::ArrayMessage<double>>();
+  position.push_back(1.25);
+  position.push_back(-0.5);
+
+  double first = 0.0;
+  double second = 0.0;
+  ASSERT_TRUE(tryGetNumericValue(*message, "position/0", first));
+  ASSERT_TRUE(tryGetNumericValue(*message, "position/1", second));
+  EXPECT_DOUBLE_EQ(first, 1.25);
+  EXPECT_DOUBLE_EQ(second, -0.5);
+
+  double missing = 0.0;
+  EXPECT_FALSE(tryGetNumericValue(*message, "position/2", missing));
+  EXPECT_FALSE(tryGetNumericValue(*message, "name/0", missing));
+}
+
+TEST(MessageFieldAccess, readsFixedPrimitiveArrayElements) {
+  auto message = createMessagePrototype("geometry_msgs/msg/PoseWithCovariance");
+  ASSERT_NE(message, nullptr);
+
+  auto& covariance = (*message)["covariance"].as<ros_babel_fish::FixedLengthArrayMessage<double>>();
+  covariance.assign(0, 9.0);
+  covariance.assign(1, 8.5);
+
+  double first = 0.0;
+  double second = 0.0;
+  ASSERT_TRUE(tryGetNumericValue(*message, "covariance/0", first));
+  ASSERT_TRUE(tryGetNumericValue(*message, "covariance/1", second));
+  EXPECT_DOUBLE_EQ(first, 9.0);
+  EXPECT_DOUBLE_EQ(second, 8.5);
+}
+
+TEST(MessageFieldAccess, readsCompoundArrayElements) {
+  auto message = createMessagePrototype("geometry_msgs/msg/PoseArray");
+  ASSERT_NE(message, nullptr);
+
+  auto& poses = (*message)["poses"].as<ros_babel_fish::CompoundArrayMessage>();
+  auto& pose = poses.appendEmpty();
+  pose["position"]["x"] = 3.5;
+
+  const auto* field = getMember(*message, "poses/0/position/x");
+  ASSERT_NE(field, nullptr);
+  EXPECT_DOUBLE_EQ(getNumericValue(*field), 3.5);
+
+  double value = 0.0;
+  ASSERT_TRUE(tryGetNumericValue(*message, "poses/0/position/x", value));
+  EXPECT_DOUBLE_EQ(value, 3.5);
+}
+
+TEST(MessageFieldAccess, detectsSingleWildcardSegment) {
+  EXPECT_TRUE(isWildcardFieldPath("position/*"));
+  EXPECT_TRUE(isWildcardFieldPath("poses/*/position/x"));
+  EXPECT_FALSE(isWildcardFieldPath("position/0"));
+  EXPECT_FALSE(isWildcardFieldPath("poses/*/position/*"));
+  EXPECT_FALSE(isWildcardFieldPath("linear/x"));
+}
+
+TEST(MessageFieldAccess, rejectsBareNumericArrayPath) {
+  rqt_multiplot::MessageFieldType element;
+  element.kind = rqt_multiplot::MessageFieldType::Builtin;
+  element.isNumeric = true;
+
+  rqt_multiplot::MessageFieldType array;
+  array.kind = rqt_multiplot::MessageFieldType::Array;
+  array.elementType = std::make_shared<rqt_multiplot::MessageFieldType>(element);
+
+  EXPECT_FALSE(isPlottableFieldPath(array, "position"));
+  EXPECT_TRUE(isPlottableFieldPath(array, "position/*"));
+
+  rqt_multiplot::MessageFieldType scalar;
+  scalar.kind = rqt_multiplot::MessageFieldType::Builtin;
+  scalar.isNumeric = true;
+  EXPECT_TRUE(isPlottableFieldPath(scalar, "position/0"));
+  EXPECT_TRUE(isPlottableFieldPath(scalar, "poses/*/position/x"));
+  EXPECT_FALSE(isPlottableFieldPath(scalar, "poses/*/position/*"));
+  EXPECT_FALSE(isPlottableFieldPath(rqt_multiplot::MessageFieldType(), "position"));
+}
+
+TEST(MessageFieldAccess, readsPrimitiveArraySeries) {
+  auto message = createMessagePrototype("sensor_msgs/msg/JointState");
+  ASSERT_NE(message, nullptr);
+
+  auto& position = (*message)["position"].as<ros_babel_fish::ArrayMessage<double>>();
+  position.push_back(1.25);
+  position.push_back(-0.5);
+  position.push_back(3.0);
+
+  std::vector<double> values;
+  ASSERT_TRUE(tryGetNumericSeries(*message, "position/*", values));
+  ASSERT_EQ(values.size(), 3u);
+  EXPECT_DOUBLE_EQ(values[0], 1.25);
+  EXPECT_DOUBLE_EQ(values[1], -0.5);
+  EXPECT_DOUBLE_EQ(values[2], 3.0);
+}
+
+TEST(MessageFieldAccess, readsFixedPrimitiveArraySeries) {
+  auto message = createMessagePrototype("geometry_msgs/msg/PoseWithCovariance");
+  ASSERT_NE(message, nullptr);
+
+  auto& covariance = (*message)["covariance"].as<ros_babel_fish::FixedLengthArrayMessage<double>>();
+  covariance.assign(0, 9.0);
+  covariance.assign(1, 8.5);
+  covariance.assign(2, 1.0);
+
+  std::vector<double> values;
+  ASSERT_TRUE(tryGetNumericSeries(*message, "covariance/*", values));
+  ASSERT_EQ(values.size(), 36u);
+  EXPECT_DOUBLE_EQ(values[0], 9.0);
+  EXPECT_DOUBLE_EQ(values[1], 8.5);
+  EXPECT_DOUBLE_EQ(values[2], 1.0);
+}
+
+TEST(MessageFieldAccess, readsCompoundArraySeries) {
+  auto message = createMessagePrototype("geometry_msgs/msg/PoseArray");
+  ASSERT_NE(message, nullptr);
+
+  auto& poses = (*message)["poses"].as<ros_babel_fish::CompoundArrayMessage>();
+  poses.appendEmpty()["position"]["x"] = 1.0;
+  poses.appendEmpty()["position"]["x"] = 2.5;
+  poses.appendEmpty()["position"]["y"] = 4.0;
+
+  std::vector<double> xs;
+  ASSERT_TRUE(tryGetNumericSeries(*message, "poses/*/position/x", xs));
+  ASSERT_EQ(xs.size(), 3u);
+  EXPECT_DOUBLE_EQ(xs[0], 1.0);
+  EXPECT_DOUBLE_EQ(xs[1], 2.5);
+  EXPECT_DOUBLE_EQ(xs[2], 0.0);
+
+  std::vector<double> ys;
+  ASSERT_TRUE(tryGetNumericSeries(*message, "poses/*/position/y", ys));
+  ASSERT_EQ(ys.size(), 3u);
+  EXPECT_DOUBLE_EQ(ys[2], 4.0);
+}
+
+TEST(MessageFieldAccess, rejectsInvalidSeriesPaths) {
+  auto joints = createMessagePrototype("sensor_msgs/msg/JointState");
+  ASSERT_NE(joints, nullptr);
+  (*joints)["position"].as<ros_babel_fish::ArrayMessage<double>>().push_back(1.0);
+
+  std::vector<double> values;
+  EXPECT_FALSE(tryGetNumericSeries(*joints, "position/*/0", values));
+  EXPECT_FALSE(tryGetNumericSeries(*joints, "name/*", values));
+  EXPECT_FALSE(tryGetNumericSeries(*joints, "poses/*/position/x", values));
+
+  auto poses = createMessagePrototype("geometry_msgs/msg/PoseArray");
+  ASSERT_NE(poses, nullptr);
+  EXPECT_FALSE(tryGetNumericSeries(*poses, "poses/*/position/*", values));
+}
+
+TEST(MessageFieldAccess, returnsEmptySeriesForEmptyArray) {
+  auto message = createMessagePrototype("sensor_msgs/msg/JointState");
+  ASSERT_NE(message, nullptr);
+
+  std::vector<double> values{1.0};
+  ASSERT_TRUE(tryGetNumericSeries(*message, "position/*", values));
+  EXPECT_TRUE(values.empty());
+}
+
+ros_babel_fish::CompoundMessage& appendStatus(ros_babel_fish::CompoundMessage& message, const std::string& name) {
+  auto& status = message["status"].as<ros_babel_fish::CompoundArrayMessage>();
+  auto& entry = status.appendEmpty();
+  entry["name"] = name;
+  return entry;
+}
+
+void appendKeyValue(ros_babel_fish::CompoundMessage& status, const std::string& key, const std::string& value) {
+  auto& values = status["values"].as<ros_babel_fish::CompoundArrayMessage>();
+  auto& entry = values.appendEmpty();
+  entry["key"] = key;
+  entry["value"] = value;
+}
+
+TEST(MessageFieldAccess, readsDiagnosticValueByNameAndKey) {
+  EXPECT_TRUE(isDiagnosticArrayTypeName("diagnostic_msgs/DiagnosticArray"));
+  EXPECT_TRUE(isDiagnosticArrayTypeName("diagnostic_msgs/msg/DiagnosticArray"));
+  EXPECT_FALSE(isDiagnosticArrayTypeName("sensor_msgs/msg/JointState"));
+
+  auto message = createMessagePrototype("diagnostic_msgs/msg/DiagnosticArray");
+  ASSERT_NE(message, nullptr);
+
+  auto& other = appendStatus(*message, "Motor");
+  appendKeyValue(other, "Voltage", "1.0");
+  auto& battery = appendStatus(*message, "/Power System/Battery");
+  appendKeyValue(battery, "Current", "ok");
+  appendKeyValue(battery, "Voltage", " 12.5 ");
+  auto& duplicate = appendStatus(*message, "/Power System/Battery");
+  appendKeyValue(duplicate, "Voltage", "99");
+
+  double value = 0.0;
+  ASSERT_TRUE(tryGetDiagnosticValue(*message, "/Power System/Battery", "Voltage", value));
+  EXPECT_DOUBLE_EQ(value, 12.5);
+
+  ASSERT_TRUE(tryGetDiagnosticValue(*message, "Motor", "Voltage", value));
+  EXPECT_DOUBLE_EQ(value, 1.0);
+
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "/Power System/Battery", "Current", value));
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "/Power System/Battery", "Missing", value));
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "Missing", "Voltage", value));
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "", "Voltage", value));
+
+  auto& scientific = appendStatus(*message, "Science");
+  appendKeyValue(scientific, "Scale", "1.5e-3");
+  appendKeyValue(scientific, "Labeled", "1.5 V");
+  appendKeyValue(scientific, "Empty", "");
+  ASSERT_TRUE(tryGetDiagnosticValue(*message, "Science", "Scale", value));
+  EXPECT_DOUBLE_EQ(value, 0.0015);
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "Science", "Labeled", value));
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "Science", "Empty", value));
+
+  const auto pairs = diagnosticStatusKeys(*message);
+  ASSERT_GE(pairs.size(), 2u);
+  EXPECT_EQ(pairs[0].name, "Motor");
+  EXPECT_EQ(pairs[0].key, "Voltage");
+  EXPECT_TRUE(pairs[0].hardwareId.empty());
+}
+
+TEST(MessageFieldAccess, matchesDiagnosticHardwareIdOnlyWhenSet) {
+  auto message = createMessagePrototype("diagnostic_msgs/msg/DiagnosticArray");
+  ASSERT_NE(message, nullptr);
+
+  auto& front = appendStatus(*message, "Range");
+  front["hardware_id"] = std::string("front");
+  appendKeyValue(front, "Distance", "1.5");
+  auto& rear = appendStatus(*message, "Range");
+  rear["hardware_id"] = std::string("rear");
+  appendKeyValue(rear, "Distance", "3.5");
+
+  double value = 0.0;
+  ASSERT_TRUE(tryGetDiagnosticValue(*message, "Range", "Distance", value));
+  EXPECT_DOUBLE_EQ(value, 1.5);
+  ASSERT_TRUE(tryGetDiagnosticValue(*message, "Range", "Distance", value, "rear"));
+  EXPECT_DOUBLE_EQ(value, 3.5);
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "Range", "Distance", value, "missing"));
+
+  auto& frontAgain = appendStatus(*message, "Range");
+  frontAgain["hardware_id"] = std::string("front");
+  appendKeyValue(frontAgain, "Distance", "9");
+  ASSERT_TRUE(tryGetDiagnosticValue(*message, "Range", "Distance", value, "front"));
+  EXPECT_DOUBLE_EQ(value, 1.5);
+
+  auto& bare = appendStatus(*message, "Bare");
+  bare["hardware_id"] = std::string("a");
+  appendKeyValue(bare, "Other", "1");
+  auto& later = appendStatus(*message, "Bare");
+  later["hardware_id"] = std::string("a");
+  appendKeyValue(later, "Distance", "4");
+  EXPECT_FALSE(tryGetDiagnosticValue(*message, "Bare", "Distance", value, "a"));
+
+  const auto readings = diagnosticStatusKeys(*message);
+  const auto rearReading =
+      std::find_if(readings.begin(), readings.end(), [](const DiagnosticStatusKey& reading) { return reading.hardwareId == "rear"; });
+  ASSERT_NE(rearReading, readings.end());
+  EXPECT_EQ(rearReading->name, "Range");
+  EXPECT_EQ(rearReading->key, "Distance");
+}
+
+TEST(MessageFieldAccess, collectsTopLevelArrayLengths) {
+  auto message = createMessagePrototype("sensor_msgs/msg/JointState");
+  ASSERT_NE(message, nullptr);
+  auto& position = (*message)["position"].as<ros_babel_fish::ArrayMessage<double>>();
+  position.push_back(1.0);
+  position.push_back(2.0);
+
+  const QHash<QString, int> lengths = collectArrayLengths(*message, 100);
+
+  EXPECT_EQ(lengths.value("position", -1), 2);
+  EXPECT_EQ(lengths.value("name", -1), 0);
+  EXPECT_FALSE(lengths.contains("header"));
+}
+
+TEST(MessageFieldAccess, collectsNestedArrayLengthsPerElementUpToLimit) {
+  auto message = createMessagePrototype("diagnostic_msgs/msg/DiagnosticArray");
+  ASSERT_NE(message, nullptr);
+  auto& first = appendStatus(*message, "A");
+  appendKeyValue(first, "k1", "1");
+  appendKeyValue(first, "k2", "2");
+  auto& second = appendStatus(*message, "B");
+  appendKeyValue(second, "k1", "1");
+  appendStatus(*message, "C");
+
+  const QHash<QString, int> lengths = collectArrayLengths(*message, 2);
+
+  EXPECT_EQ(lengths.value("status", -1), 3);
+  EXPECT_EQ(lengths.value("status/0/values", -1), 2);
+  EXPECT_EQ(lengths.value("status/1/values", -1), 1);
+  EXPECT_FALSE(lengths.contains("status/2/values"));
+}
+
+TEST(MessageFieldAccess, deserializesSerializedMessage) {
+  std_msgs::msg::Float64 value;
+  value.data = 42.0;
+
+  rclcpp::Serialization<std_msgs::msg::Float64> serialization;
+  rclcpp::SerializedMessage serialized;
+  serialization.serialize_message(&value, &serialized);
+
+  auto decoded = deserializeMessage("std_msgs/msg/Float64", serialized);
+  ASSERT_NE(decoded, nullptr);
+  const auto* data = getMember(*decoded, "data");
+  ASSERT_NE(data, nullptr);
+  EXPECT_DOUBLE_EQ(getNumericValue(*data), 42.0);
+}
+
+TEST(MessageFieldAccess, readsEveryBuiltinNumericType) {
+  auto message = createMessagePrototype("test_msgs/msg/BasicTypes");
+  ASSERT_NE(message, nullptr);
+  (*message)["bool_value"] = true;
+  (*message)["byte_value"] = static_cast<uint8_t>(7);
+  (*message)["char_value"] = static_cast<uint8_t>(65);
+  (*message)["float32_value"] = 1.5f;
+  (*message)["float64_value"] = 2.5;
+  (*message)["int8_value"] = static_cast<int8_t>(-3);
+  (*message)["uint8_value"] = static_cast<uint8_t>(9);
+  (*message)["int16_value"] = static_cast<int16_t>(-300);
+  (*message)["uint16_value"] = static_cast<uint16_t>(400);
+  (*message)["int32_value"] = static_cast<int32_t>(-5000);
+  (*message)["uint32_value"] = static_cast<uint32_t>(6000);
+  (*message)["int64_value"] = static_cast<int64_t>(-70000);
+  (*message)["uint64_value"] = static_cast<uint64_t>(80000);
+
+  const rqt_multiplot::MessageFieldType fieldType = fieldTypeFromMessage(*message);
+  EXPECT_FALSE(fieldType.members.isEmpty());
+
+  const std::vector<std::pair<const char*, double>> expected = {
+      {"bool_value", 1.0},      {"byte_value", 7.0},       {"char_value", 65.0},     {"float32_value", 1.5},  {"float64_value", 2.5},
+      {"int8_value", -3.0},     {"uint8_value", 9.0},      {"int16_value", -300.0},  {"uint16_value", 400.0}, {"int32_value", -5000.0},
+      {"uint32_value", 6000.0}, {"int64_value", -70000.0}, {"uint64_value", 80000.0}};
+  for (const auto& [name, value] : expected) {
+    double read = 0.0;
+    ASSERT_TRUE(tryGetNumericValue(*message, name, read)) << name;
+    EXPECT_DOUBLE_EQ(read, value) << name;
+  }
+
+  EXPECT_FALSE(hasHeader(*message));
+  EXPECT_THROW(getStamp(*message), ros_babel_fish::BabelFishException);
+}
+
+TEST(MessageFieldAccess, readsUnboundedAndBoundedPrimitiveArrays) {
+  auto unbounded = createMessagePrototype("test_msgs/msg/UnboundedSequences");
+  ASSERT_NE(unbounded, nullptr);
+  appendArrayElement((*unbounded)["bool_values"].as<ros_babel_fish::ArrayMessage<bool>>(), true);
+  appendArrayElement((*unbounded)["byte_values"].as<ros_babel_fish::ArrayMessage<uint8_t>>(), static_cast<uint8_t>(4));
+  appendArrayElement((*unbounded)["char_values"].as<ros_babel_fish::ArrayMessage<uint8_t>>(), static_cast<uint8_t>(66));
+  appendArrayElement((*unbounded)["float32_values"].as<ros_babel_fish::ArrayMessage<float>>(), 1.25f);
+  appendArrayElement((*unbounded)["float64_values"].as<ros_babel_fish::ArrayMessage<double>>(), 2.25);
+  appendArrayElement((*unbounded)["int8_values"].as<ros_babel_fish::ArrayMessage<int8_t>>(), static_cast<int8_t>(-8));
+  appendArrayElement((*unbounded)["uint8_values"].as<ros_babel_fish::ArrayMessage<uint8_t>>(), static_cast<uint8_t>(8));
+  appendArrayElement((*unbounded)["int16_values"].as<ros_babel_fish::ArrayMessage<int16_t>>(), static_cast<int16_t>(-16));
+  appendArrayElement((*unbounded)["uint16_values"].as<ros_babel_fish::ArrayMessage<uint16_t>>(), static_cast<uint16_t>(16));
+  appendArrayElement((*unbounded)["int32_values"].as<ros_babel_fish::ArrayMessage<int32_t>>(), static_cast<int32_t>(-32));
+  appendArrayElement((*unbounded)["uint32_values"].as<ros_babel_fish::ArrayMessage<uint32_t>>(), static_cast<uint32_t>(32));
+  appendArrayElement((*unbounded)["int64_values"].as<ros_babel_fish::ArrayMessage<int64_t>>(), static_cast<int64_t>(-64));
+  appendArrayElement((*unbounded)["uint64_values"].as<ros_babel_fish::ArrayMessage<uint64_t>>(), static_cast<uint64_t>(64));
+
+  const char* fields[] = {"bool_values",   "byte_values",  "char_values",  "float32_values", "float64_values",
+                          "int8_values",   "uint8_values", "int16_values", "uint16_values",  "int32_values",
+                          "uint32_values", "int64_values", "uint64_values"};
+  for (const char* field : fields) {
+    std::vector<double> values;
+    ASSERT_TRUE(tryGetNumericSeries(*unbounded, std::string(field) + "/*", values)) << field;
+    ASSERT_EQ(values.size(), 1u) << field;
+    double element = 0.0;
+    ASSERT_TRUE(tryGetNumericValue(*unbounded, std::string(field) + "/0", element)) << field;
+    EXPECT_DOUBLE_EQ(element, values[0]) << field;
+  }
+
+  std::vector<double> values;
+  EXPECT_FALSE(tryGetNumericSeries(*unbounded, "float64_values/not-an-index/*", values));
+
+  auto bounded = createMessagePrototype("test_msgs/msg/BoundedSequences");
+  ASSERT_NE(bounded, nullptr);
+  appendArrayElement((*bounded)["float64_values"].as<ros_babel_fish::BoundedArrayMessage<double>>(), 3.5);
+  double boundedValue = 0.0;
+  ASSERT_TRUE(tryGetNumericValue(*bounded, "float64_values/0", boundedValue));
+  EXPECT_DOUBLE_EQ(boundedValue, 3.5);
+
+  auto emptyPoses = createMessagePrototype("geometry_msgs/msg/PoseArray");
+  ASSERT_NE(emptyPoses, nullptr);
+  const auto poseType = fieldTypeFromMessage((*emptyPoses)["poses"]);
+  EXPECT_EQ(poseType.kind, rqt_multiplot::MessageFieldType::Array);
+  EXPECT_NE(poseType.elementType, nullptr);
+
+  auto emptyBasic = createMessagePrototype("test_msgs/msg/BoundedSequences");
+  ASSERT_NE(emptyBasic, nullptr);
+  const auto basicType = fieldTypeFromMessage((*emptyBasic)["basic_types_values"]);
+  EXPECT_EQ(basicType.kind, rqt_multiplot::MessageFieldType::Array);
+
+  auto fixed = createMessagePrototype("test_msgs/msg/Arrays");
+  ASSERT_NE(fixed, nullptr);
+  const auto fixedType = fieldTypeFromMessage((*fixed)["float64_values"]);
+  EXPECT_FALSE(fixedType.isDynamicArray);
+  EXPECT_GT(fixedType.arraySize, 0);
+}
+
+}  // namespace

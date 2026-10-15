@@ -1,0 +1,427 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#include "rqt_multiplot/CurveAxisConfig.hpp"
+
+#include <QtMath>
+
+#include <algorithm>
+#include <utility>
+
+namespace rqt_multiplot {
+namespace {
+
+CurveAxisConfig::FieldType parseFieldType(int raw) {
+  switch (raw) {
+    case CurveAxisConfig::MessageData:
+    case CurveAxisConfig::MessageReceiptTime:
+    case CurveAxisConfig::ArrayIndex:
+    case CurveAxisConfig::DiagnosticValue:
+    case CurveAxisConfig::TopicMetric:
+      return static_cast<CurveAxisConfig::FieldType>(raw);
+    default:
+      return CurveAxisConfig::MessageData;
+  }
+}
+
+CurveAxisConfig::UnitConversion parseUnitConversion(int raw) {
+  switch (raw) {
+    case CurveAxisConfig::None:
+    case CurveAxisConfig::RadiansToDegrees:
+    case CurveAxisConfig::DegreesToRadians:
+      return static_cast<CurveAxisConfig::UnitConversion>(raw);
+    default:
+      return CurveAxisConfig::None;
+  }
+}
+
+rqt_multiplot::TopicMetric parseTopicMetric(int raw) {
+  if (raw < 0 || raw >= kTopicMetricCount) {
+    return rqt_multiplot::TopicMetric::Rate;
+  }
+  return static_cast<rqt_multiplot::TopicMetric>(raw);
+}
+
+constexpr int kDefaultTopicMetricWindow = static_cast<int>(TopicMetricsWindow::kDefaultWindowSize);
+
+}  // namespace
+
+CurveAxisConfig::CurveAxisConfig(QObject* parent, QString topic, QString type, FieldType fieldType, QString field, bool labelFromZero)
+    : Config(parent),
+      topic_(std::move(topic)),
+      type_(std::move(type)),
+      fieldType_(fieldType),
+      field_(std::move(field)),
+      topicMetric_(rqt_multiplot::TopicMetric::Rate),
+      topicMetricWindow_(kDefaultTopicMetricWindow),
+      labelFromZero_(labelFromZero),
+      unitConversion_(None),
+      scaleConfig_(new CurveAxisScaleConfig(this)) {
+  connect(scaleConfig_, SIGNAL(changed()), this, SLOT(scaleChanged()));
+}
+
+CurveAxisConfig::~CurveAxisConfig() = default;
+
+void CurveAxisConfig::setTopic(const QString& topic) {
+  if (topic != topic_) {
+    topic_ = topic;
+
+    emit topicChanged(topic);
+    emit changed();
+  }
+}
+
+const QString& CurveAxisConfig::getTopic() const {
+  return topic_;
+}
+
+void CurveAxisConfig::setType(const QString& type) {
+  if (type != type_) {
+    type_ = type;
+
+    emit typeChanged(type);
+    emit changed();
+  }
+}
+
+const QString& CurveAxisConfig::getType() const {
+  return type_;
+}
+
+void CurveAxisConfig::setFieldType(FieldType fieldType) {
+  if (fieldType != fieldType_) {
+    fieldType_ = fieldType;
+
+    emit fieldTypeChanged(fieldType);
+    emit changed();
+  }
+}
+
+CurveAxisConfig::FieldType CurveAxisConfig::getFieldType() const {
+  return fieldType_;
+}
+
+void CurveAxisConfig::setField(const QString& field) {
+  if (field != field_) {
+    field_ = field;
+
+    emit fieldChanged(field);
+    emit changed();
+  }
+}
+
+const QString& CurveAxisConfig::getField() const {
+  return field_;
+}
+
+void CurveAxisConfig::setDiagnosticStatus(const QString& status) {
+  if (status != diagnosticStatus_) {
+    diagnosticStatus_ = status;
+
+    emit diagnosticStatusChanged(status);
+    emit changed();
+  }
+}
+
+const QString& CurveAxisConfig::getDiagnosticStatus() const {
+  return diagnosticStatus_;
+}
+
+void CurveAxisConfig::setDiagnosticKey(const QString& key) {
+  if (key != diagnosticKey_) {
+    diagnosticKey_ = key;
+
+    emit diagnosticKeyChanged(key);
+    emit changed();
+  }
+}
+
+const QString& CurveAxisConfig::getDiagnosticKey() const {
+  return diagnosticKey_;
+}
+
+void CurveAxisConfig::setDiagnosticHardwareId(const QString& hardwareId) {
+  if (hardwareId != diagnosticHardwareId_) {
+    diagnosticHardwareId_ = hardwareId;
+
+    emit diagnosticHardwareIdChanged(hardwareId);
+    emit changed();
+  }
+}
+
+const QString& CurveAxisConfig::getDiagnosticHardwareId() const {
+  return diagnosticHardwareId_;
+}
+
+void CurveAxisConfig::setTopicMetric(rqt_multiplot::TopicMetric metric) {
+  if (metric != topicMetric_) {
+    topicMetric_ = metric;
+
+    emit topicMetricChanged(static_cast<int>(metric));
+    emit changed();
+  }
+}
+
+rqt_multiplot::TopicMetric CurveAxisConfig::getTopicMetric() const {
+  return topicMetric_;
+}
+
+void CurveAxisConfig::setTopicMetricWindow(int window) {
+  const int clamped =
+      std::clamp(window, static_cast<int>(TopicMetricsWindow::kMinWindowSize), static_cast<int>(TopicMetricsWindow::kMaxWindowSize));
+  if (clamped != topicMetricWindow_) {
+    topicMetricWindow_ = clamped;
+
+    emit topicMetricWindowChanged(clamped);
+    emit changed();
+  }
+}
+
+int CurveAxisConfig::getTopicMetricWindow() const {
+  return topicMetricWindow_;
+}
+
+void CurveAxisConfig::setLabelFromZero(bool labelFromZero) {
+  if (labelFromZero != labelFromZero_) {
+    labelFromZero_ = labelFromZero;
+
+    emit labelFromZeroChanged(labelFromZero);
+    emit changed();
+  }
+}
+
+bool CurveAxisConfig::isLabelFromZero() const {
+  return labelFromZero_;
+}
+
+void CurveAxisConfig::setUnitConversion(UnitConversion unitConversion) {
+  if (unitConversion != unitConversion_) {
+    unitConversion_ = unitConversion;
+
+    emit unitConversionChanged(unitConversion);
+    emit changed();
+  }
+}
+
+CurveAxisConfig::UnitConversion CurveAxisConfig::getUnitConversion() const {
+  return unitConversion_;
+}
+
+double CurveAxisConfig::conversionFactor(UnitConversion unitConversion) {
+  switch (unitConversion) {
+    case RadiansToDegrees:
+      return 180.0 / M_PI;
+    case DegreesToRadians:
+      return M_PI / 180.0;
+    case None:
+    default:
+      return 1.0;
+  }
+}
+
+double CurveAxisConfig::convertValue(double value) const {
+  if (fieldType_ == ArrayIndex || fieldType_ == TopicMetric || isTimeSource()) {
+    return value;
+  }
+  return value * conversionFactor(unitConversion_);
+}
+
+bool CurveAxisConfig::isTimeFieldPath(const QString& field) {
+  return (field == QLatin1String("stamp")) || field.endsWith(QLatin1String("/stamp"));
+}
+
+bool CurveAxisConfig::usesTimeScale() const {
+  if (fieldType_ == ArrayIndex || fieldType_ == DiagnosticValue || fieldType_ == TopicMetric) {
+    return false;
+  }
+  return labelFromZero_ || (fieldType_ == MessageReceiptTime) || (fieldType_ == MessageData && isTimeFieldPath(field_));
+}
+
+bool CurveAxisConfig::isTimeSource() const {
+  if (fieldType_ == ArrayIndex || fieldType_ == DiagnosticValue || fieldType_ == TopicMetric) {
+    return false;
+  }
+  return (fieldType_ == MessageReceiptTime) || (fieldType_ == MessageData && isTimeFieldPath(field_));
+}
+
+bool CurveAxisConfig::hasConfiguredSource() const {
+  if (fieldType_ == DiagnosticValue) {
+    return !diagnosticStatus_.isEmpty() && !diagnosticKey_.isEmpty();
+  }
+  return fieldType_ == MessageReceiptTime || fieldType_ == ArrayIndex || fieldType_ == TopicMetric || !field_.isEmpty();
+}
+
+QString CurveAxisConfig::getFieldLabel() const {
+  if (fieldType_ == MessageReceiptTime) {
+    return QStringLiteral("receipt_time");
+  }
+  if (fieldType_ == ArrayIndex) {
+    return QStringLiteral("index");
+  }
+  if (fieldType_ == TopicMetric) {
+    return QString::fromLatin1(topicMetricName(topicMetric_));
+  }
+  if (fieldType_ == DiagnosticValue) {
+    const QString label = diagnosticStatus_ + QLatin1Char('/') + diagnosticKey_;
+    if (diagnosticHardwareId_.isEmpty()) {
+      return label;
+    }
+    return label + QStringLiteral(" [") + diagnosticHardwareId_ + QLatin1Char(']');
+  }
+  return field_;
+}
+
+CurveAxisScaleConfig* CurveAxisConfig::getScaleConfig() const {
+  return scaleConfig_;
+}
+
+void CurveAxisConfig::save(QSettings& settings) const {
+  settings.setValue("topic", topic_);
+  settings.setValue("type", type_);
+  settings.setValue("field_type", fieldType_);
+  settings.setValue("field", field_);
+  settings.setValue("diagnostic_status", diagnosticStatus_);
+  settings.setValue("diagnostic_key", diagnosticKey_);
+  settings.setValue("diagnostic_hardware_id", diagnosticHardwareId_);
+  settings.setValue("topic_metric", QString::fromLatin1(topicMetricName(topicMetric_)));
+  settings.setValue("topic_metric_window", topicMetricWindow_);
+  settings.setValue("label_from_zero", labelFromZero_);
+  settings.setValue("unit_conversion", unitConversion_);
+
+  settings.beginGroup("scale");
+  scaleConfig_->save(settings);
+  settings.endGroup();
+}
+
+void CurveAxisConfig::load(QSettings& settings) {
+  setTopic(settings.value("topic").toString());
+  setType(settings.value("type").toString());
+  const auto fieldType = parseFieldType(settings.value("field_type").toInt());
+  setFieldType(fieldType);
+  setField(settings.value("field").toString());
+  setDiagnosticStatus(settings.value("diagnostic_status").toString());
+  setDiagnosticKey(settings.value("diagnostic_key").toString());
+  setDiagnosticHardwareId(settings.value("diagnostic_hardware_id").toString());
+  setTopicMetric(topicMetricFromName(settings.value("topic_metric").toString().toStdString()).value_or(rqt_multiplot::TopicMetric::Rate));
+  setTopicMetricWindow(settings.value("topic_metric_window", kDefaultTopicMetricWindow).toInt());
+  setLabelFromZero(settings.value("label_from_zero", fieldType == MessageReceiptTime).toBool());
+  setUnitConversion(parseUnitConversion(settings.value("unit_conversion", None).toInt()));
+
+  settings.beginGroup("scale");
+  scaleConfig_->load(settings);
+  settings.endGroup();
+}
+
+void CurveAxisConfig::reset() {
+  setTopic(QString());
+  setType(QString());
+  setFieldType(MessageData);
+  setField(QString());
+  setDiagnosticStatus(QString());
+  setDiagnosticKey(QString());
+  setDiagnosticHardwareId(QString());
+  setTopicMetric(rqt_multiplot::TopicMetric::Rate);
+  setTopicMetricWindow(kDefaultTopicMetricWindow);
+  setLabelFromZero(false);
+  setUnitConversion(None);
+
+  scaleConfig_->reset();
+}
+
+void CurveAxisConfig::write(QDataStream& stream) const {
+  stream << topic_;
+  stream << type_;
+  stream << (int)fieldType_;
+  stream << field_;
+  stream << diagnosticStatus_;
+  stream << diagnosticKey_;
+  stream << diagnosticHardwareId_;
+  stream << static_cast<int>(topicMetric_);
+  stream << topicMetricWindow_;
+  stream << labelFromZero_;
+  stream << static_cast<int>(unitConversion_);
+
+  scaleConfig_->write(stream);
+}
+
+void CurveAxisConfig::read(QDataStream& stream) {
+  QString topic;
+  QString type;
+  QString field;
+  QString diagnosticStatus;
+  QString diagnosticKey;
+  QString diagnosticHardwareId;
+  int fieldType = 0;
+  int topicMetric = 0;
+  int topicMetricWindow = 0;
+  bool labelFromZero = false;
+  int unitConversion = 0;
+
+  stream >> topic;
+  setTopic(topic);
+  stream >> type;
+  setType(type);
+  stream >> fieldType;
+  setFieldType(parseFieldType(fieldType));
+  stream >> field;
+  setField(field);
+  stream >> diagnosticStatus;
+  setDiagnosticStatus(diagnosticStatus);
+  stream >> diagnosticKey;
+  setDiagnosticKey(diagnosticKey);
+  stream >> diagnosticHardwareId;
+  setDiagnosticHardwareId(diagnosticHardwareId);
+  stream >> topicMetric;
+  setTopicMetric(parseTopicMetric(topicMetric));
+  stream >> topicMetricWindow;
+  setTopicMetricWindow(topicMetricWindow);
+  stream >> labelFromZero;
+  setLabelFromZero(labelFromZero);
+  stream >> unitConversion;
+  setUnitConversion(parseUnitConversion(unitConversion));
+
+  scaleConfig_->read(stream);
+}
+
+CurveAxisConfig& CurveAxisConfig::operator=(const CurveAxisConfig& src) {
+  if (this == &src) {
+    return *this;
+  }
+
+  setTopic(src.topic_);
+  setType(src.type_);
+  setFieldType(src.fieldType_);
+  setField(src.field_);
+  setDiagnosticStatus(src.diagnosticStatus_);
+  setDiagnosticKey(src.diagnosticKey_);
+  setDiagnosticHardwareId(src.diagnosticHardwareId_);
+  setTopicMetric(src.topicMetric_);
+  setTopicMetricWindow(src.topicMetricWindow_);
+  setLabelFromZero(src.labelFromZero_);
+  setUnitConversion(src.unitConversion_);
+
+  *scaleConfig_ = *src.scaleConfig_;
+
+  return *this;
+}
+
+void CurveAxisConfig::scaleChanged() {
+  emit changed();
+}
+
+}  // namespace rqt_multiplot

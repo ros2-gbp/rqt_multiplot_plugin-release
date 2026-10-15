@@ -1,0 +1,97 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#include <QDir>
+#include <QMutexLocker>
+
+#include <ament_index_cpp/get_packages_with_prefixes.hpp>
+
+#include "rqt_multiplot/AmentIndex.hpp"
+
+#include "rqt_multiplot/PackageRegistry.hpp"
+
+namespace rqt_multiplot {
+
+PackageRegistry::Impl PackageRegistry::impl_;
+
+PackageRegistry::PackageRegistry(QObject* parent) : QObject(parent) {
+  connect(&impl_, SIGNAL(started()), this, SLOT(threadStarted()));
+  connect(&impl_, SIGNAL(finished()), this, SLOT(threadFinished()));
+}
+
+PackageRegistry::~PackageRegistry() = default;
+
+PackageRegistry::Impl::Impl(QObject* parent) : QThread(parent) {}
+
+PackageRegistry::Impl::~Impl() {
+  terminate();
+  wait();
+}
+
+QMap<QString, QString> PackageRegistry::getPackages() {
+  QMutexLocker lock(&impl_.mutex_);
+
+  return impl_.packages_;
+}
+
+bool PackageRegistry::isUpdating() {
+  return impl_.isRunning();
+}
+
+bool PackageRegistry::isEmpty() {
+  QMutexLocker lock(&impl_.mutex_);
+
+  return impl_.packages_.isEmpty();
+}
+
+void PackageRegistry::update() {
+  impl_.start();
+}
+
+void PackageRegistry::wait() {
+  impl_.wait();
+}
+
+void PackageRegistry::Impl::run() {
+  mutex_.lock();
+  packages_.clear();
+  mutex_.unlock();
+
+  const auto prefixes = ament_index_cpp::get_packages_with_prefixes();
+  for (const auto& [name, prefix] : prefixes) {
+    try {
+      QDir directory(QString::fromStdString(packageSharePath(name)));
+      if (directory.exists()) {
+        mutex_.lock();
+        packages_[QString::fromStdString(name)] = directory.absolutePath();
+        mutex_.unlock();
+      }
+    } catch (const std::exception&) {
+    }
+  }
+}
+
+void PackageRegistry::threadStarted() {
+  emit updateStarted();
+}
+
+void PackageRegistry::threadFinished() {
+  emit updateFinished();
+}
+
+}  // namespace rqt_multiplot

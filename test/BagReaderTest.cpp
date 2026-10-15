@@ -1,0 +1,323 @@
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include <geometry_msgs/msg/twist.hpp>
+#include <rclcpp/serialization.hpp>
+#include <rclcpp/serialized_message.hpp>
+#include <rclcpp/time.hpp>
+#include <rosbag2_cpp/reader.hpp>
+#include <rosbag2_cpp/writer.hpp>
+#include <rosbag2_storage/storage_options.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/float64.hpp>
+
+#include <QApplication>
+#include <QStringList>
+
+#include <gtest/gtest.h>
+
+#include "BagMessageCollector.hpp"
+#include "MessageDefinitionSource.hpp"
+#include "rqt_multiplot/BagOpen.hpp"
+#include "rqt_multiplot/BagReader.hpp"
+#include "rqt_multiplot/MessageFieldAccess.hpp"
+#include "rqt_multiplot/RosContext.hpp"
+
+namespace {
+
+using rqt_multiplot::deserializeMessage;
+using rqt_multiplot::getMember;
+using rqt_multiplot::getNumericValue;
+
+struct ExtractedPoint {
+  std::string topic;
+  std::string path;
+  double value;
+};
+
+std::filesystem::path makeTempDir() {
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("rqt_multiplot_bag_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(path);
+  return path;
+}
+
+void writeFixtureBag(const std::string& uri, const std::string& storageId) {
+  rosbag2_storage::StorageOptions options;
+  options.uri = uri;
+  options.storage_id = storageId;
+
+  rosbag2_cpp::Writer writer;
+  writer.open(options);
+
+  std_msgs::msg::Float64 value;
+  value.data = 1.5;
+  writer.write(value, "/float", rclcpp::Time(1, 0, RCL_ROS_TIME));
+  value.data = 2.5;
+  writer.write(value, "/float", rclcpp::Time(2, 0, RCL_ROS_TIME));
+
+  geometry_msgs::msg::Twist twist;
+  twist.linear.x = 3.25;
+  twist.angular.z = -0.5;
+  writer.write(twist, "/twist", rclcpp::Time(3, 0, RCL_ROS_TIME));
+  writer.close();
+}
+
+std::filesystem::path findFirstFileWithExtension(const std::filesystem::path& directory, const std::string& extension) {
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    if (entry.is_regular_file() && entry.path().extension() == extension) {
+      return entry.path();
+    }
+  }
+  return {};
+}
+
+std::vector<ExtractedPoint> extractPoints(const std::string& uri) {
+  rosbag2_cpp::Reader reader;
+  rqt_multiplot::openBag(reader, uri);
+
+  std::unordered_map<std::string, std::string> types;
+  for (const auto& topic : reader.get_all_topics_and_types()) {
+    types.emplace(topic.name, topic.type);
+  }
+
+  std::vector<ExtractedPoint> points;
+  while (reader.has_next()) {
+    const auto bagMessage = reader.read_next();
+    const rclcpp::SerializedMessage serialized(*bagMessage->serialized_data);
+    const auto decoded = deserializeMessage(types.at(bagMessage->topic_name), serialized);
+    if (decoded == nullptr) {
+      continue;
+    }
+
+    if (bagMessage->topic_name == "/float") {
+      const auto* data = getMember(*decoded, "data");
+      if (data != nullptr) {
+        points.push_back({"/float", "data", getNumericValue(*data)});
+      }
+    } else if (bagMessage->topic_name == "/twist") {
+      const auto* linearX = getMember(*decoded, "linear/x");
+      const auto* angularZ = getMember(*decoded, "angular/z");
+      if (linearX != nullptr) {
+        points.push_back({"/twist", "linear/x", getNumericValue(*linearX)});
+      }
+      if (angularZ != nullptr) {
+        points.push_back({"/twist", "angular/z", getNumericValue(*angularZ)});
+      }
+    }
+  }
+  return points;
+}
+
+void expectFixturePoints(const std::vector<ExtractedPoint>& points) {
+  ASSERT_EQ(points.size(), 4u);
+  EXPECT_EQ(points[0].topic, "/float");
+  EXPECT_DOUBLE_EQ(points[0].value, 1.5);
+  EXPECT_EQ(points[1].topic, "/float");
+  EXPECT_DOUBLE_EQ(points[1].value, 2.5);
+  EXPECT_EQ(points[2].path, "linear/x");
+  EXPECT_DOUBLE_EQ(points[2].value, 3.25);
+  EXPECT_EQ(points[3].path, "angular/z");
+  EXPECT_DOUBLE_EQ(points[3].value, -0.5);
+}
+
+TEST(BagReader, extractsPointsFromMcapBag) {
+  const auto root = makeTempDir();
+  const auto uri = (root / "mcap_bag").string();
+  writeFixtureBag(uri, "mcap");
+  expectFixturePoints(extractPoints(uri));
+  std::filesystem::remove_all(root);
+}
+
+TEST(BagReader, extractsPointsFromSqliteBag) {
+  const auto root = makeTempDir();
+  const auto uri = (root / "sqlite_bag").string();
+  writeFixtureBag(uri, "sqlite3");
+  expectFixturePoints(extractPoints(uri));
+  std::filesystem::remove_all(root);
+}
+
+TEST(BagOpen, setsMcapStorageIdForMcapFile) {
+  const auto options = rqt_multiplot::storageOptionsForUri("/tmp/recording.mcap");
+  EXPECT_EQ(options.uri, "/tmp/recording.mcap");
+  EXPECT_EQ(options.storage_id, "mcap");
+}
+
+TEST(BagOpen, setsSqliteStorageIdForDb3File) {
+  EXPECT_EQ(rqt_multiplot::storageOptionsForUri("/tmp/recording.db3").storage_id, "sqlite3");
+}
+
+TEST(BagOpen, matchesMcapExtensionCaseInsensitively) {
+  EXPECT_EQ(rqt_multiplot::storageOptionsForUri("/tmp/recording.MCAP").storage_id, "mcap");
+}
+
+TEST(BagOpen, matchesDb3ExtensionCaseInsensitively) {
+  EXPECT_EQ(rqt_multiplot::storageOptionsForUri("/tmp/recording.DB3").storage_id, "sqlite3");
+}
+
+TEST(BagOpen, leavesStorageIdEmptyForBagDirectory) {
+  const auto root = makeTempDir();
+  const auto options = rqt_multiplot::storageOptionsForUri(root.string());
+  EXPECT_TRUE(options.storage_id.empty());
+  std::filesystem::remove_all(root);
+}
+
+TEST(BagReader, decodesTypeThatIsNotInstalledFromMcapSchema) {
+  const std::string type = "rqt_multiplot_not_installed_msgs/msg/JointReading";
+  const std::string topic = "/joint_reading";
+  const auto root = makeTempDir();
+  const auto uri = (root / "mcap_bag").string();
+  {
+    auto definition = rqt_multiplot::test::fullMessageDefinition("sensor_msgs/msg/JointState");
+    definition.topic_type = type;
+    definition.type_hash.clear();
+
+    rosbag2_storage::StorageOptions options;
+    options.uri = uri;
+    options.storage_id = "mcap";
+    rosbag2_cpp::Writer writer;
+    writer.open(options);
+    rosbag2_storage::TopicMetadata metadata;
+    metadata.name = topic;
+    metadata.type = type;
+    metadata.serialization_format = "cdr";
+    writer.create_topic(metadata, definition);
+
+    sensor_msgs::msg::JointState message;
+    message.position = {0.5, -1.75};
+    auto serialized = std::make_shared<rclcpp::SerializedMessage>();
+    rclcpp::Serialization<sensor_msgs::msg::JointState>().serialize_message(&message, serialized.get());
+    writer.write(serialized, topic, type, rclcpp::Time(1, 0, RCL_ROS_TIME));
+    writer.close();
+  }
+
+  rosbag2_cpp::Reader reader;
+  rqt_multiplot::openBag(reader, uri);
+  EXPECT_EQ(std::vector<std::string>{type},
+            rqt_multiplot::registerMessageDefinitions(reader, rqt_multiplot::RosContext::typeSupportProvider()));
+  ASSERT_TRUE(reader.has_next());
+  const auto bagMessage = reader.read_next();
+  const auto decoded = deserializeMessage(type, rclcpp::SerializedMessage(*bagMessage->serialized_data));
+  ASSERT_NE(nullptr, decoded);
+  double value = 0.0;
+  ASSERT_TRUE(rqt_multiplot::tryGetNumericValue(*decoded, "position/1", value));
+  EXPECT_DOUBLE_EQ(-1.75, value);
+  std::filesystem::remove_all(root);
+}
+
+constexpr size_t kFloat64SerializedSize = 12;
+
+void writeFloatBag(const std::string& uri, int64_t stampSec, double data) {
+  rosbag2_storage::StorageOptions options;
+  options.uri = uri;
+  options.storage_id = "mcap";
+
+  rosbag2_cpp::Writer writer;
+  writer.open(options);
+  std_msgs::msg::Float64 value;
+  value.data = data;
+  writer.write(value, "/float", rclcpp::Time(stampSec, 0, RCL_ROS_TIME));
+  writer.close();
+}
+
+QApplication* ensureApplication() {
+  if (QApplication::instance() != nullptr) {
+    return qobject_cast<QApplication*>(QApplication::instance());
+  }
+  qputenv("QT_QPA_PLATFORM", "offscreen");
+  static int argc = 1;
+  static char arg0[] = "test_rqt_multiplot";
+  static char* argv[] = {arg0, nullptr};
+  return new QApplication(argc, argv);
+}
+
+void readFloatBags(const QStringList& paths, rqt_multiplot::BagMessageCollector& collector) {
+  rqt_multiplot::BagReader reader;
+  ASSERT_TRUE(
+      reader.subscribe(QStringLiteral("/float"), &collector, SLOT(onMessage(const QString&, const Message&)), {}, Qt::AutoConnection));
+  QObject::connect(&reader, &rqt_multiplot::BagReader::readingProgressChanged, &collector, &rqt_multiplot::BagMessageCollector::onProgress);
+  QObject::connect(&reader, &rqt_multiplot::BagReader::readingFinished, &collector, &rqt_multiplot::BagMessageCollector::onFinished);
+  QObject::connect(&reader, &rqt_multiplot::BagReader::readingFailed, &collector, &rqt_multiplot::BagMessageCollector::onFailed);
+  reader.read(paths);
+  reader.wait();
+  QApplication::processEvents();
+}
+
+TEST(BagReader, readsSeveralBagsInStartTimeOrder) {
+  ensureApplication();
+  const auto root = makeTempDir();
+  const auto late = root / "late";
+  const auto early = root / "early";
+  writeFloatBag(late.string(), 10, 10.0);
+  writeFloatBag(early.string(), 1, 1.0);
+
+  rqt_multiplot::BagMessageCollector collector;
+  readFloatBags(QStringList{QString::fromStdString(late.string()), QString::fromStdString(early.string())}, collector);
+
+  ASSERT_EQ(collector.samples.size(), 2);
+  EXPECT_DOUBLE_EQ(collector.samples[0].value, 1.0);
+  EXPECT_DOUBLE_EQ(collector.samples[1].value, 10.0);
+  EXPECT_LT(collector.samples[0].timeNs, collector.samples[1].timeNs);
+  EXPECT_EQ(collector.samples[0].serializedSize, kFloat64SerializedSize);
+  EXPECT_EQ(collector.finished, 1);
+  EXPECT_EQ(collector.failed, 0);
+  EXPECT_GE(collector.maxProgress, 1.0);
+  std::filesystem::remove_all(root);
+}
+
+TEST(BagReader, dropsDuplicateBagPaths) {
+  ensureApplication();
+  const auto root = makeTempDir();
+  const auto uri = (root / "once").string();
+  writeFloatBag(uri, 1, 3.0);
+  const QString path = QString::fromStdString(uri);
+
+  rqt_multiplot::BagMessageCollector collector;
+  readFloatBags(QStringList{path, path}, collector);
+
+  ASSERT_EQ(collector.samples.size(), 1);
+  EXPECT_DOUBLE_EQ(collector.samples[0].value, 3.0);
+  EXPECT_EQ(collector.finished, 1);
+  std::filesystem::remove_all(root);
+}
+
+TEST(BagReader, keepsMessagesWhenOneFileFails) {
+  ensureApplication();
+  const auto root = makeTempDir();
+  const auto uri = (root / "good").string();
+  writeFloatBag(uri, 2, 4.0);
+  const QString missing = QStringLiteral("/this/path/does/not/exist.mcap");
+
+  rqt_multiplot::BagMessageCollector collector;
+  readFloatBags(QStringList{QString::fromStdString(uri), missing}, collector);
+
+  ASSERT_EQ(collector.samples.size(), 1);
+  EXPECT_DOUBLE_EQ(collector.samples[0].value, 4.0);
+  EXPECT_EQ(collector.failed, 1);
+  EXPECT_EQ(collector.finished, 0);
+  EXPECT_TRUE(collector.error.contains(missing));
+  EXPECT_GE(collector.maxProgress, 1.0);
+  std::filesystem::remove_all(root);
+}
+
+TEST(BagReader, extractsPointsFromStandaloneMcapFile) {
+  const auto root = makeTempDir();
+  const auto bagDir = root / "mcap_bag";
+  writeFixtureBag(bagDir.string(), "mcap");
+
+  const auto mcapFile = findFirstFileWithExtension(bagDir, ".mcap");
+  ASSERT_FALSE(mcapFile.empty());
+
+  const auto standalone = root / "standalone.mcap";
+  std::filesystem::copy_file(mcapFile, standalone);
+  ASSERT_FALSE(std::filesystem::exists(standalone.parent_path() / "metadata.yaml"));
+
+  expectFixturePoints(extractPoints(standalone.string()));
+  std::filesystem::remove_all(root);
+}
+
+}  // namespace

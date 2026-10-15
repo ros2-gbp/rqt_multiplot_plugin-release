@@ -1,0 +1,522 @@
+# Rqt Multiplot Plugin
+
+[![CI](https://github.com/samuelba/rqt_multiplot_plugin/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/samuelba/rqt_multiplot_plugin/actions/workflows/ci.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/samuelba/rqt_multiplot_plugin/branch/main/graph/badge.svg)](https://codecov.io/gh/samuelba/rqt_multiplot_plugin)
+
+Plots numeric ROS 2 message fields in tiled 2D charts ([Qwt](https://qwt.sourceforge.io)). Nested splits and tabs give a layout that is not a strict grid. Subscribe to live topics or import a rosbag2, then inspect values with a linked cursor and a curve-values sidebar. Runs as its own window or as an rqt plugin.
+
+![Rqt Multiplot](images/multiplot-banner.svg)
+
+**Authors:** Ralf Kaestner, Samuel Bachmann
+
+**Maintainer:** Samuel Bachmann
+
+**License:** GNU Lesser General Public License v3.0 (LGPL-3.0)
+
+**ROS2 distributions:** Jazzy, Lyrical, Rolling
+
+## Features
+
+- **Nested plot layout** — split any plot left/right or top/bottom and nest splits (two on the left, one on the right). Drag splitter handles; reset the active tab to even sizes. Ratios are stored in the XML
+- **Tabs** — multiple named layouts in one window; each tab has its own plots, colors, grid, and link/track settings
+- **Live topics and rosbag2** — subscribe while running, or import `.mcap` / `.db3` files and bag directories
+- **[Bag overlay](#bag-overlay)** — compare 2 or 3 recordings on the same plots, aligned at the start, at markers, or at a Y threshold
+- **Linked plots** — shared scale and cursor; optional point tracking under the pointer; click a legend item to hide a curve
+- **Curve values** — collapsible per-tab list of each curve's latest X and Y, grouped by plot
+- **Time axes** — message receipt time, start from zero, date-time labels, or raw stamps. Time zone in **File → Preferences** (local, UTC, or IANA). Optional plot-level **Time window** (last *N* seconds)
+- **Log scale** — optional log scale on a plot's X or Y axis. Values <= 0 are drawn below the axis. Time axes stay linear, and a log plot stays out of linked scale
+- **Light and dark** — theme and plot-title size, weight, and color under **File → Preferences**. Changes apply to the open plots
+- **Configs and export** — **File** menu: open/save XML (`file://`, `home://`, `package://`); import or add bags; export PNG, SVG, PDF, TXT, or CSV. Unsaved layout changes prompt on close. Older row×column files still load
+- **Data statistics** — right click on a plot to open the data statistics dialog, showing the mean, std, min, max, median, mode, range, count, RMS, and sum of the data
+- **[Array curves](#array-curves)** — plot a whole array vs index (or vs another array field); the series is replaced on each message
+- **[Diagnostic messages](#diagnostic-messages)** — plot diagnostic messages from the `/diagnostics` or `/diagnostics_agg` topic
+- **[Topic metrics](#topic-metrics)** — plot the rate, bandwidth, and delay of a topic, as `ros2 topic hz`, `bw`, and `delay` show them
+- **[Topic browser](#topic-browser)** — browse live and bag topics, then drag'n'drop a field onto a plot
+- **[Curve filters](#curve-filters)** — ordered chain on a curve's Y series: derivative, integral, moving average, low-pass, and others. Drag a filter onto a plot, or edit the chain in the curve dialog
+- **[Markers](#markers)** — two vertical markers A and B per plot, with Δt and per-curve Δy and slope, to measure latency, rise time, or settling time
+
+Also: run / pause / clear, circular and time-frame buffers, rad ↔ deg on an axis, grid on/off, drag-and-drop of curves between plot legends.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="images/overview_light.png" alt="Multiplot light theme" />
+      <br/>Light
+    </td>
+    <td align="center" width="50%">
+      <img src="images/overview_dark.png" alt="Multiplot dark theme" />
+      <br/>Dark
+    </td>
+  </tr>
+</table>
+
+## Installation
+
+### ROS distribution
+
+**Coming soon.** The package is not on the ROS build farm yet. After release:
+
+```shell
+sudo apt-get update
+sudo apt-get install ros-jazzy-rqt-multiplot
+sudo apt-get install ros-lyrical-rqt-multiplot
+sudo apt-get install ros-rolling-rqt-multiplot
+```
+
+### Building from source
+
+Tested on ROS 2 Jazzy, Lyrical, and Rolling. Put this repository in a colcon workspace `src` folder (clone or symlink), then:
+
+```shell
+cd ~/colcon_ws
+rosdep install --from-paths src --ignore-src -y
+colcon build --packages-select rqt_multiplot
+source install/setup.bash
+```
+
+## Usage
+
+Standalone window (no rqt):
+
+```shell
+ros2 run rqt_multiplot multiplot
+```
+
+rqt plugin, either in its own rqt window or inside rqt (**Plugins → Visualization → Multiplot**):
+
+```shell
+ros2 run rqt_multiplot rqt_multiplot
+```
+
+```shell
+rqt --force-discover
+```
+
+If the rqt plugin list or layout is broken:
+
+```shell
+rqt --clear-config
+```
+
+Load a configuration, a bag, and start plotting:
+
+```shell
+ros2 run rqt_multiplot multiplot \
+  --multiplot-config file:///path/to/layout.xml \
+  --multiplot-bag /path/to/bag \
+  --multiplot-run-all
+```
+
+The rqt launcher needs `--` before those flags.
+
+| Option | Meaning |
+| --- | --- |
+| `--multiplot-config` / `-c` | XML layout URL |
+| `--multiplot-bag` / `-b` | rosbag2 file or directory |
+| `--multiplot-run-all` / `-r` | Start all plots immediately |
+
+### Plot interaction
+
+| Input | Action |
+| --- | --- |
+| Left drag | Pan |
+| Ctrl + left drag | Draw a rectangle to zoom |
+| Mouse wheel | Zoom in / out |
+| Right click | Open plot context menu |
+| Shift + left click | Place marker A, then B, then move the nearer one; a readout shows Δt and per curve y(A), y(B), Δy and slope |
+| Drag a marker line | Move that marker |
+| Home | Reset zoom of all plots in the active tab |
+| Hover (Points enabled) | Crosshair; nearest-sample marker and readout with crosshair x, y plus each curve title / x, y |
+| Click a legend item | Toggle that curve's visibility |
+| Drag a legend item onto another plot | Copy that curve |
+
+### Keyboard shortcuts
+
+These apply while focus is inside the Multiplot window. The full list is under **Help → Keyboard shortcuts** (`F1`).
+
+| Shortcut | Action |
+| --- | --- |
+| Space | Play / pause all plots |
+| Ctrl+Shift+Delete | Clear all plots |
+| Home | Reset zoom in the active tab |
+| Ctrl+T / Ctrl+W | New tab / close tab |
+| Ctrl+PgDown / Ctrl+PgUp | Next / previous tab |
+| Alt+1 ... Alt+9 | Select tab 1-9 |
+| Ctrl+B | Topic browser |
+| Ctrl+Shift+F | Curve filters |
+| Ctrl+Shift+B | Curve values (active tab) |
+| Ctrl+G | Grid (active tab) |
+| Ctrl+I / Ctrl+Shift+I | Import bag files / add bag files |
+| Ctrl+E | Export image |
+
+In the plot configuration dialog, the curve list uses Ctrl+A (select all), Ctrl+C (copy), Ctrl+V (paste), and Delete (remove selected).
+
+Use the plot toolbar to run, pause, clear, configure, split (left / right / top / bottom), maximize, or close one plot. Drag a splitter handle to resize panes; those ratios are stored in the XML. The even-distribution button on the main toolbar resets splitter sizes in the active tab. Older row×column files still load.
+
+**Link Scale** keeps axis ranges in sync across the plots. **Link Cursor** moves the crosshair on every plot. **Track Points** marks the nearest sample on each curve and shows a readout with the crosshair x, y and each curve title and x, y. The side-panel button (between Track Points and the time toggles) shows or hides **Curve values** for the active tab. The grid button turns plot grids on or off for the active tab.
+
+The timer and calendar toggles set the X-axis time labels for the active tab: start from zero (default), date and time (`HH:mm:ss.z` / `yyyy MMM dd`), or raw timestamps. Only one of those two can be on; both off shows the timestamp. Array-index and other numeric X axes are unchanged. Set the date-time zone in **File → Preferences** (local system zone by default, UTC, or a named IANA zone). The choice is stored in the plot XML.
+
+**File** — new / open / save / save as XML; import or add bag files or a bag directory; overlay 2 or 3 bags; export image or text; preferences. Closing with unsaved layout changes asks to save.
+
+### Preferences
+
+**File → Preferences** has **General** (time zone) and **Appearance** (light/dark theme, plot-title font size, regular/bold, color). Title changes apply to the open plots so they can be checked before saving. Save as user defaults, or store them in the XML layout.
+
+### Configure a plot
+
+Open the gear on a plot. Add curves, set axis titles, legend, plot rate, and an optional **Time window** (last *N* seconds for all curves when every X axis uses message receipt time or header stamp).
+
+![Configure plot](images/configure_plot.png)
+
+### Edit a curve
+
+Pick topic, message type, and field for each axis. X and Y can come from different topics.
+
+![Edit curve](images/configure_curve.png)
+
+Useful curve options:
+
+- **Message receipt time** — plot against the time the message arrived
+- **rad → deg** / **deg → rad** — convert the selected axis
+- **Circular buffer** / **Time frame** — keep a fixed number of points or the last *n* seconds
+
+Whole-array fields use a different curve mode. See [Array curves](#array-curves).
+
+The **Filters** tab edits the [curve filter](#curve-filters) chain for this curve: add, remove, reorder, and set parameters. The same editor is in the curve-filters sidebar.
+
+### Import a bag
+
+Configure the curves first (topics and fields must match the bag). **Import from bag files…** reads every selected file in start-time order and replaces the curves. **Add bag files…** appends more files without clearing. **Import from bag directory…** and **Add bag directory…** do the same for one rosbag2 directory.
+
+Supported storage: `.mcap`, `.db3`, and a rosbag2 directory. Adding a file again appends its points again. Clear, then Import, to start over.
+
+### Export
+
+From the plot table or a single plot:
+
+- Image: PNG, SVG, PDF
+- Data: TXT (comment header) or CSV
+
+## Bag overlay
+
+Compare the same curves from 2 or 3 recordings. **File → Overlay bag files…** reads `.mcap` or `.db3` files. Fewer or more than that is rejected. The bags are ordered by start time. The earliest bag is the reference and fills the curves already on the plots. Each later bag adds a copy of every time-series curve. The plots pause when the read finishes.
+
+| Bag | Drawn as | Legend |
+| --- | --- | --- |
+| Reference (earliest) | the curve's own pen | the curve title |
+| Second | dashed, same color | `title [name]` |
+| Third | dotted, same color | `title [name]` |
+
+The legend name is the file name without the extension. Two files with the same name use `folder/name`.
+
+Copies are shifted so the bag start times coincide. The shift is a time offset, and it applies only when X is message receipt time or a header stamp. Array curves are not copied. A filter chain on a curve also runs on its copies, and TXT/CSV export includes the copies with the bag name in the column title. One overlay is shared by every plot and every tab: the same bags, and the same offsets. Set up the curves first. A curve added later has no copy until you overlay again. The overlay is not stored in the XML. **Import from bag files…** removes it. **Add bag files…** keeps it.
+
+**File → Overlay offsets…** lists each offset in seconds. The reference stays at 0. Change an overlay offset to slide that bag on every plot. The step is 0.1 s.
+
+Right-click a plot to align from the data:
+
+| Action | What it does |
+| --- | --- |
+| **Align overlay at markers** | Put [marker](#markers) A on a feature of the reference and marker B on the same feature of an overlay curve. The overlay moves until B lies on A, then the markers are cleared. With 3 bags the menu names each overlay bag, and only that bag moves. Both markers must be set |
+| **Align overlay at threshold…** | Enter a Y value. The dialog starts at the middle of the curve's Y range. Each overlay moves so its first crossing of that value is at the same time as the reference. With more than one curve, pick the curve first |
+| **Reset overlay alignment** | Restore the start-time alignment |
+
+The crossing time is linearly interpolated between the samples on either side of the value, rising or falling. Alignment uses the plotted points, so an active filter chain counts. A bag that never reaches the value stays where it is, and a message names it. If the reference never crosses the value, no bag moves. An offset changed on one plot applies to that bag on all plots.
+
+## Array curves
+
+A normal curve appends one point per message. An **array curve** replaces the whole series from that message: one point per element.
+
+Both axes must use the same topic.
+
+- **Array index** — X or Y is `0..n-1` for the other axis’s array
+- **Wildcard field** — `position/*` or `poses/*/position/x` plots every element
+- **Array fade** — keep the last *n* snapshots and fade them. Disabled on time-series curves
+
+A `*` path cannot mix with receipt time or a single scalar. `position/0` stays a time series.
+
+![Array fade history](images/array_fade_history.gif)
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="images/array_fade_history.png" alt="Faded array snapshots" />
+      <br/>Sticks and lines with faded past snapshots
+    </td>
+    <td align="center" width="50%">
+      <img src="images/array_index_curve.png" alt="Array index versus data" />
+      <br/>X array index, Y <code>data/*</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="images/array_index_curve_2.png" alt="Array index versus position" />
+      <br/>X array index, Y <code>position/*</code>
+    </td>
+    <td align="center" width="50%">
+      <img src="images/array_vs_array_curve.png" alt="Velocity versus position arrays" />
+      <br/>X <code>velocity/*</code>, Y <code>position/*</code>
+    </td>
+  </tr>
+</table>
+
+```shell
+ros2 run rqt_multiplot publish_array_demo.py
+```
+
+| Topic | Type | Try |
+| --- | --- | --- |
+| `/array_demo/floats` | `std_msgs/Float32MultiArray` | X array index, Y `data/*` |
+| `/array_demo/joints` | `sensor_msgs/JointState` | Y `position/*` (length 4 ↔ 8) |
+| `/array_demo/covariance` | `geometry_msgs/PoseWithCovariance` | Y `covariance/*` |
+| `/array_demo/poses` | `geometry_msgs/PoseArray` | X `poses/*/position/x`, Y `poses/*/position/y` |
+| `/array_demo/scan` | `sensor_msgs/LaserScan` | Y `ranges/*` |
+
+## Diagnostic messages
+
+Diagnostic messages can be plotted from the `/diagnostics`/`/diagnostics_agg` topic.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="images/diagnostics_1.png" alt="Range distance diagnostic curve" />
+      <br/>Range distance from <code>/diagnostics</code> with <code>hardware_id</code> filter
+    </td>
+    <td align="center" width="50%">
+      <img src="images/diagnostics_2.png" alt="CPU load diagnostic curve" />
+      <br/>CPU load from <code>/diagnostics</code> without <code>hardware_id</code> filter
+    </td>
+  </tr>
+</table>
+
+```shell
+ros2 run rqt_multiplot publish_diagnostics_demo.py
+```
+
+All on `/diagnostics` (`diagnostic_msgs/DiagnosticArray`). X: `header/stamp` or message receipt time; Y: **Diagnostic value**.
+
+| Status name | Key | Hardware id | Note |
+| --- | --- | --- | --- |
+| `/Power System/Battery` | `Voltage` | | published with Charger; duplicate every 5th message |
+| `/Power System/Charger` | `Output current` | | |
+| `/Motors/Front Left` | `Position` | | order swaps with Front Right each message |
+| `/Motors/Front Left` | `Winding temp` | | missing every 4th message |
+| `/IMU` | `Yaw rate` | | only status in that message |
+| `/Computer` | `CPU load` | | two keys on one status |
+| `/GPS` | `Satellites` | | absent between publishes |
+| `/Sensors/Range` | `Distance` | `front` or `rear` | same status name and key |
+
+In the [topic browser](#topic-browser), a `DiagnosticArray` topic has a **Diagnostic values** node. It lists each status (`name [hardware_id]`) and its keys. Drag a key, or a status for all its keys, onto a plot to add **Diagnostic value** curves. Live topics add new keys while checked. Bag topics scan up to 5000 messages.
+
+## Topic metrics
+
+A curve axis can show a metric of its topic instead of a message field. In **Edit curve**, check **Topic metric** on Y and select the metric. X is usually message receipt time. Both axes must use the same topic.
+
+| Group | Metrics | Unit |
+| --- | --- | --- |
+| Rate | rate, period min, period max, period std dev | Hz, s |
+| Bandwidth | bandwidth, message size mean, min, max | B/s, B |
+| Delay | delay mean, min, max, std dev | s |
+
+- The metrics use the same formulas as `ros2 topic hz`, `bw`, and `delay`. Period values are in seconds.
+- **Window** sets the number of most recent messages for the metric (default 100, range 2 to 10000).
+- The curve gets at most one point per 0.1 s of message time. The window restarts when the curve subscribes again.
+- Delay is receipt time minus `header/stamp`. Topics without a header give no delay points.
+- For a bag, receipt time is the recording time. Bag delay is therefore the delay at recording time, not the delay now.
+- Size and bandwidth use the serialized message size. For live topics this is the size on the wire of the local RMW.
+
+## Topic browser
+
+A sidebar lists live topics and, after a bag import, the topics in that bag. Check a topic to show its fields. Drag a numeric field, a message, or an array onto a plot to add curves.
+
+The tree-view button on the left of the plot area, or **View → Topic browser**, shows or hides the sidebar. Drag the splitter to set the width. Visibility and width are stored in the XML.
+
+![Topic browser](images/topic_browser.png)
+
+- **Filter** matches the topic name or the type. The refresh button reloads live topics.
+- **Live** lists topics that are publishing. A checked topic stays listed after it stops.
+- **Bag** lists topics from the imported files, under **Bags (N)**. Those field roots end with `[bag]`. Adding a bag keeps topics that were only in an earlier file.
+- A drop sets Y to the field and X to message receipt time. A wildcard array (`position/*`) uses array index on X. Dropping a message or an array adds one curve per numeric field. More than 10 curves asks first, except for a topic root drop.
+- A dropped array with listed elements asks for the curve mode: **Array vs index** (one wildcard curve per field, for example `poses/*/position/x`) or **Individual curves** (one curve over time per element and field, for example `poses/3/position/x`).
+- A dynamic array lists elements after one message arrives, up to 100.
+- Each topic has a **Topic metrics** node. Drag a metric, or the node for all metrics, onto a plot to add [topic metric](#topic-metrics) curves. Delay metrics show only for messages with a header.
+- Dropping a topic root opens a dialog with two lists: **Metrics** (none checked) and **Fields**. Numeric fields are checked. Arrays show as wildcard fields (`position/*`, array vs index) and are not checked. Only the checked items are added.
+
+## Curve filters
+
+A filter chain transforms the Y values of one curve. Each filter takes the output of the one before it. X stays the sample time, except **Moving average** with **Compensate lag**, which places the point at the center of its window. The raw series is kept and replayed when the chain, a parameter, or a rad/deg conversion changes, so the plot, statistics, markers, cursor readout, curve-values sidebar, and CSV/TXT export all show the filtered series. The chain is stored in the curve XML.
+
+Array snapshot curves (array vs index, wildcard fields) cannot take filters.
+
+Open the sidebar with **View → Curve filters**, the filter button on the left rail, or Ctrl+Shift+F.
+
+| Action | Result |
+| --- | --- |
+| Drag a filter onto a plot | **Absolute** and **Time since previous point** apply to every curve that can take a filter. The others open a dialog for the parameters and which curves to include. Cancel adds nothing |
+| Double-click a filter | Append it to the curve selected in the sidebar. Parameters are the defaults, or the last ones chosen for that type in a drop dialog |
+| Right click a plot → **Filter curves...** | Open the sidebar on a curve of that plot |
+| **Add filtered copy** | Add a second curve on the same plot, titled `name [filtered]`, with the same points and chain. The original curve does not change |
+
+| Filter | Result | Parameters |
+| --- | --- | --- |
+| Derivative | dy/dx. Drops the first point, and any point with no positive step | Step between points, or a fixed step |
+| Integral | Running integral of y over x (trapezoid). Starts at 0 | Step between points, or a fixed step |
+| Moving average | Mean of the last N samples | Window size (default 10). Optional lag compensation |
+| Moving RMS | Root mean square of the last N samples | Window size (default 10) |
+| Moving variance | Variance of the last N samples, or the standard deviation | Window size (default 10). Optional standard deviation |
+| Low-pass | First-order low-pass. A larger time constant is smoother and lags more | Time constant (default 0.1 s) |
+| Absolute | \|y\| | |
+| Scale/offset | y × scale + offset | Scale (default 1), offset (default 0) |
+| Threshold | 1 when the condition is true, else 0 | y = A, y < A, y ≤ A, y > A, y ≥ A, or A ≤ y ≤ B |
+| Outlier removal | Drops a one-sample spike larger than the factor times the step before it. Delays the curve by one sample | Spike factor (default 100) |
+| Time since previous point | dx, the gap to the previous point. Drops the first point | |
+| Samples count | Number of samples in the last T milliseconds, this point included | Window (default 1000 ms) |
+
+## Markers
+
+Each plot has two vertical markers, A and B, each with a tag at the top and bottom of the plot. When both are set, a readout next to them compares the curves at the two times. Use it to measure latency (command edge to response edge), rise time, or settling time against a value.
+
+| Action | Input |
+| --- | --- |
+| Place a marker | Shift + left click. The first click sets A, the second sets B, later clicks move the nearer marker |
+| Place from the menu | Right click → **Set marker A here** / **Set marker B here** |
+| Move a marker | Drag its line (the pointer changes near the line) |
+| Remove both markers | Right click → **Clear markers**, or clear the plot |
+
+The readout has one row per visible curve:
+
+| Row | A | B | Δ | Δ/Δt |
+| --- | --- | --- | --- | --- |
+| `t` (or `x`) | time at A | time at B | Δt = B − A | |
+| curve | y at A | y at B | Δy = y(B) − y(A) | slope Δy / Δt |
+
+- y is linearly interpolated between the two samples around the marker, so it does not depend on the sample rate. A cell is empty when the marker is outside the curve's data.
+- Δ values are signed: B left of A gives a negative Δt. The slope shows `–` when Δt is 0.
+- Times use the same format as the X axis. The first row is `x` when the X axis is not time.
+- With **Link Cursor** on, the markers are shared by all plots in the tab, and a new plot from a split gets them too.
+- Markers and readout are part of the plot, so **Copy image** and **Save image** include them.
+- Markers are not stored in the XML. Clearing one plot removes its markers only.
+
+## Bugs and feature requests
+
+Use the [issue tracker](https://github.com/samuelba/rqt_multiplot_plugin/issues).
+
+## Development
+
+### Distrobox
+
+[Distrobox](https://distrobox.it/) can be used to develop and test the package in a containerized environment for different ROS2 distributions.
+
+Pre-built images with all build, test, and runtime dependencies live under [`distrobox/`](distrobox/). Build and create a container:
+
+```shell
+cd distrobox
+./update.sh jazzy
+distrobox enter rqt-multiplot-jazzy
+```
+
+Ubuntu images: `jazzy`, `lyrical`, `rolling`. RPM images, without clang: `el9-jazzy`, `el10-lyrical`, `el10-rolling`, `fc43-lyrical`, `fc44-rolling`.
+
+```shell
+./update.sh el9-jazzy
+distrobox enter rqt-multiplot-el9-jazzy
+```
+
+Inside the container, build from your colcon workspace as usual.
+
+### Formatting
+
+Check formatting:
+
+```bash
+colcon test --packages-select rqt_multiplot --ctest-args " -L" clang_format
+```
+
+Fix formatting issues:
+
+```bash
+find src include test \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) -print0 \
+  | xargs -0 clang-format-23 -i
+```
+
+### Linting
+
+Check linting:
+
+```bash
+colcon test --packages-select rqt_multiplot --ctest-args " -L" clang_tidy
+```
+
+### Building
+
+Build the package:
+
+```bash
+colcon build --packages-select rqt_multiplot
+```
+
+### Testing
+
+Run unit tests:
+
+```bash
+colcon test --packages-select rqt_multiplot --ctest-args " -L" "^(unit_testing|unit_testing_clang_tidy)$"
+```
+
+### Coverage
+
+Line and branch coverage for the C++ sources (`src/` and `include/`). Run from the colcon workspace root:
+
+```bash
+./src/rqt_multiplot_plugin/scripts/coverage.sh
+```
+
+The HTML report is `coverage/index.html`. CI uploads that directory as the `coverage-html` artifact.
+
+### Debian packaging
+
+In the distrobox, in the package folder.
+
+Before doing anything, delete the `debian/` and `.obj-x86_64-linux-gnu` folders.
+
+```bash
+rm -rf debian/ .obj-x86_64-linux-gnu/
+```
+
+Install dependencies:
+
+```bash
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+Generate the debian files:
+
+```bash
+# noble/jazzy
+bloom-generate rosdebian --os-name ubuntu --os-version noble --ros-distro jazzy
+# resolute/lyrical
+bloom-generate rosdebian --os-name ubuntu --os-version resolute --ros-distro lyrical
+# resolute/rolling
+bloom-generate rosdebian --os-name ubuntu --os-version resolute --ros-distro rolling
+```
+
+Generate the deb packages:
+
+```bash
+DEB_BUILD_OPTIONS=nocheck fakeroot debian/rules binary
+```
+
+### RPM packaging
+
+Run this in the matching RPM distrobox, from the package folder. Delete `rpm/` first.
+
+| Image | ROS | Generator |
+| --- | --- | --- |
+| `el9-jazzy` | Jazzy on AlmaLinux 9 | `bloom-generate rosrpm --os-name rhel --os-version 9 --ros-distro jazzy` |
+| `el10-lyrical` | Lyrical on AlmaLinux 10 | dynamic spec (`scripts/generate_rosdynrpm.py`) |
+| `el10-rolling` | Rolling on AlmaLinux 10, `ros2-testing` | dynamic spec |
+| `fc43-lyrical` | Lyrical on Fedora 43, `ros2-testing` | dynamic spec |
+| `fc44-rolling` | Rolling on Fedora 44, `ros2-testing` | dynamic spec |
+
+`bloom-generate rosdynrpm` in bloom 0.14.4 exits before it writes a spec. `scripts/generate_rosdynrpm.py` calls the same bloom library and sets the ROS package name and `/opt/ros/<distro>` prefix. `scripts/build_continuous_rpm.sh` generates the spec, rewrites `Version:` to the continuous version, and runs `rpmbuild --without tests`. Jazzy on AlmaLinux 9 uses the legacy `rosrpm` generator.

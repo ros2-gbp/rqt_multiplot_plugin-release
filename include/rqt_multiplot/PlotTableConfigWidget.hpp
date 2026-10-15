@@ -1,0 +1,131 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#pragma once
+
+#include <QAction>
+#include <QStringList>
+#include <QWidget>
+
+#include "rqt_multiplot/PlotTableConfig.hpp"
+
+namespace Ui {
+
+class PlotTableConfigWidget;
+
+}
+
+namespace rqt_multiplot {
+
+class BagOverlayDialog;
+class BagOverlaySession;
+class PlotTableWidget;
+class PlotTabWidget;
+
+class PlotTableConfigWidget : public QWidget {
+  Q_OBJECT
+ public:
+  explicit PlotTableConfigWidget(QWidget* parent = nullptr);
+  ~PlotTableConfigWidget() override;
+
+  void setConfig(PlotTableConfig* config);
+  PlotTableConfig* getConfig() const;
+  void setPlotTabs(PlotTabWidget* plotTabs);
+  PlotTabWidget* getPlotTabs() const;
+  void setPlotTable(PlotTableWidget* plotTable);
+  PlotTableWidget* getPlotTableWidget() const;
+  void runPlots();
+
+  QAction* getActionImportBagFile() const;
+  QAction* getActionAddBagFiles() const;
+  QAction* getActionImportBagDirectory() const;
+  QAction* getActionAddBagDirectory() const;
+  QAction* getActionOverlayBagFiles() const;
+  QAction* getActionOverlayOffsets() const;
+  QAction* getActionExportImageFile() const;
+  QAction* getActionExportTextFile() const;
+
+  bool loadOverlayBagPaths(const QStringList& paths);
+  BagOverlaySession* getOverlaySession() const;
+  BagOverlayDialog* getOverlayDialog() const;
+
+ private:
+  Ui::PlotTableConfigWidget* ui_;
+
+  QAction* actionImportBagFile_;
+  QAction* actionAddBagFiles_;
+  QAction* actionImportBagDirectory_;
+  QAction* actionAddBagDirectory_;
+  QAction* actionOverlayBagFiles_;
+  QAction* actionOverlayOffsets_;
+  QAction* actionExportImageFile_;
+  QAction* actionExportTextFile_;
+
+  PlotTableConfig* config_;
+  PlotTabWidget* plotTabs_;
+  PlotTableWidget* plotTable_;
+  BagOverlayDialog* overlayDialog_;
+  int playbackJobCount_;
+  QString lastJobFailure_;
+  QString lastBagDirectory_;
+
+  void unbindPlaybackSignals();
+  void bindPlaybackSignals();
+  void completePlaybackJob(const QString& toolTip, bool failed);
+  void loadBagPaths(const QStringList& paths, bool replace);
+  void updateOverlayActions();
+
+ private slots:
+  void configLinkScaleChanged(bool link);
+  void configLinkCursorChanged(bool link);
+  void configTrackPointsChanged(bool track);
+  void configTimeAxisFormatChanged(PlotTableConfig::TimeAxisFormat format);
+  void configSidebarVisibleChanged(bool visible);
+  void configGridVisibleChanged(bool visible);
+
+  void checkBoxLinkScaleStateChanged(int state);
+  void checkBoxLinkCursorStateChanged(int state);
+  void checkBoxTrackPointsStateChanged(int state);
+  void pushButtonStartAtZeroToggled(bool checked);
+  void pushButtonDateTimeToggled(bool checked);
+  void pushButtonSidebarToggled(bool checked);
+  void pushButtonGridToggled(bool checked);
+  void updateSidebarButton();
+
+  void pushButtonRunClicked();
+  void pushButtonPauseClicked();
+  void pushButtonClearClicked();
+  void pushButtonResetLayoutClicked();
+  void updateResetLayoutButtonState();
+  void menuImportBagFileTriggered();
+  void menuAddBagFilesTriggered();
+  void menuImportBagDirectoryTriggered();
+  void menuAddBagDirectoryTriggered();
+  void menuOverlayBagFilesTriggered();
+  void menuOverlayOffsetsTriggered();
+  void menuExportImageFileTriggered();
+  void menuExportTextFileTriggered();
+
+  void plotTablePlotPausedChanged();
+  void plotTableJobStarted(const QString& toolTip);
+  void plotTableJobProgressChanged(double progress);
+  void plotTableJobFinished(const QString& toolTip);
+  void plotTableJobFailed(const QString& toolTip);
+};
+
+}  // namespace rqt_multiplot

@@ -1,0 +1,506 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-test:
+    name: build-and-test / ${{ matrix.ros_distro }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [jazzy, lyrical, rolling]
+    container:
+      image: ros:${{ matrix.ros_distro }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      ROS_DISTRO: ${{ matrix.ros_distro }}
+    steps:
+      - name: Upgrade system and install git
+        run: |
+          apt-get update
+          apt-get dist-upgrade -y
+          apt-get install -y --no-install-recommends git
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: src/rqt_multiplot_plugin
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" \
+            --dependency-types buildtool \
+            --dependency-types build \
+            --dependency-types build_export \
+            --dependency-types exec \
+            --dependency-types test
+
+      - name: Build
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          colcon build --packages-select rqt_multiplot --event-handlers console_direct+
+
+      - name: Test
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          source install/setup.bash
+          colcon test --packages-select rqt_multiplot --event-handlers console_direct+ \
+            --ctest-args " -L" "^(unit_testing|unit_testing_clang_tidy)$"
+          colcon test-result --verbose
+
+      - name: Upload colcon workspace
+        uses: actions/upload-artifact@v7
+        with:
+          name: colcon-build-${{ matrix.ros_distro }}
+          path: |
+            build
+            install
+          retention-days: 1
+          if-no-files-found: error
+
+  format-and-lint:
+    name: format-and-lint / ${{ matrix.ros_distro }}
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [jazzy, lyrical, rolling]
+    container:
+      image: ros:${{ matrix.ros_distro }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      ROS_DISTRO: ${{ matrix.ros_distro }}
+      CLANG_TIDY_VERSION: '23'
+    steps:
+      - name: Upgrade system and install git
+        run: |
+          apt-get update
+          apt-get dist-upgrade -y
+          apt-get install -y --no-install-recommends git
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: src/rqt_multiplot_plugin
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" \
+            --dependency-types buildtool \
+            --dependency-types build \
+            --dependency-types build_export \
+            --dependency-types exec \
+            --dependency-types test
+
+      - name: Download colcon workspace
+        uses: actions/download-artifact@v8
+        with:
+          name: colcon-build-${{ matrix.ros_distro }}
+
+      - name: Install pinned clang tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            wget gnupg ca-certificates software-properties-common
+          wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          /tmp/llvm.sh 23
+          apt-get install -y --no-install-recommends clang-format-23 clang-tidy-23
+          clang-format-23 --version
+          clang-tidy-23 --version
+
+      - name: clang-format
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          source install/setup.bash
+          colcon test --packages-select rqt_multiplot --event-handlers console_direct+ \
+            --ctest-args " -L" clang_format
+          colcon test-result --verbose
+
+      - name: clang-tidy
+        env:
+          CLANG_TIDY_CHANGED_SINCE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # CLANG_TIDY_ALL: '1'
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          source install/setup.bash
+          colcon test --packages-select rqt_multiplot --event-handlers console_direct+ \
+            --ctest-args " -L" clang_tidy
+          colcon test-result --verbose
+
+  coverage:
+    name: coverage / jazzy
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      ROS_DISTRO: jazzy
+    steps:
+      - name: Upgrade system and install git
+        run: |
+          apt-get update
+          apt-get dist-upgrade -y
+          apt-get install -y --no-install-recommends git gcovr
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: src/rqt_multiplot_plugin
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" \
+            --dependency-types buildtool \
+            --dependency-types build \
+            --dependency-types build_export \
+            --dependency-types exec \
+            --dependency-types test
+
+      - name: Coverage
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          ./src/rqt_multiplot_plugin/scripts/coverage.sh
+          {
+            echo '## Coverage'
+            echo
+            echo '```'
+            cat coverage/summary.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage/
+          retention-days: 14
+          if-no-files-found: error
+
+  coverage-upload:
+    name: coverage-upload
+    needs: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-html
+          path: coverage
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  debian-packaging:
+    name: debian-packaging / ${{ matrix.ros_distro }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [jazzy, lyrical, rolling]
+    container:
+      image: ros:${{ matrix.ros_distro }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      ROS_DISTRO: ${{ matrix.ros_distro }}
+      DEB_BUILD_OPTIONS: nocheck
+    steps:
+      - name: Upgrade system and install git
+        run: |
+          apt-get update
+          apt-get dist-upgrade -y
+          apt-get install -y --no-install-recommends git
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: src/rqt_multiplot_plugin
+          fetch-depth: 0
+
+      - name: Test continuous Debian version
+        run: ./src/rqt_multiplot_plugin/scripts/continuous_deb_version_test.sh
+
+      - name: Build Debian package
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-bloom \
+            fakeroot \
+            dh-make \
+            debhelper
+
+          case "${ROS_DISTRO}" in
+            jazzy) UBUNTU_VERSION=noble ;;
+            lyrical|rolling) UBUNTU_VERSION=resolute ;;
+          esac
+
+          cd src/rqt_multiplot_plugin
+          rm -rf debian/ .obj-x86_64-linux-gnu/
+
+          cd ../..
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src -r -y --rosdistro "${ROS_DISTRO}"
+
+          cd src/rqt_multiplot_plugin
+          bloom-generate rosdebian \
+            --os-name ubuntu \
+            --os-version "${UBUNTU_VERSION}" \
+            --ros-distro "${ROS_DISTRO}"
+
+          eval "$(./scripts/continuous_deb_version.sh --changelog debian/changelog)"
+          export RQT_MULTIPLOT_CONTINUOUS_VERSION="${CONTINUOUS_VERSION}"
+          echo "Continuous Debian version: ${RQT_MULTIPLOT_CONTINUOUS_VERSION}"
+
+          fakeroot debian/rules binary
+
+          mkdir -p ../../debian-packages
+          mv ../ros-${ROS_DISTRO}-rqt-multiplot_*.deb ../../debian-packages/
+          mv ../ros-${ROS_DISTRO}-rqt-multiplot-dbgsym_*.ddeb ../../debian-packages/
+          ls -la ../../debian-packages/
+
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: debian-${{ matrix.ros_distro }}
+          path: debian-packages/*
+          retention-days: 7
+          if-no-files-found: error
+
+  rpm-build-and-test:
+    name: rpm-build-and-test / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: el9-jazzy
+            image: almalinux:9
+            ros_distro: jazzy
+            enable_testing: "0"
+          - name: el10-lyrical
+            image: almalinux:10
+            ros_distro: lyrical
+            enable_testing: "0"
+          - name: el10-rolling
+            image: almalinux:10
+            ros_distro: rolling
+            enable_testing: "1"
+          - name: fc43-lyrical
+            image: fedora:43
+            ros_distro: lyrical
+            enable_testing: "1"
+          - name: fc44-rolling
+            image: fedora:44
+            ros_distro: rolling
+            enable_testing: "1"
+    container:
+      image: ${{ matrix.image }}
+    env:
+      ROS_DISTRO: ${{ matrix.ros_distro }}
+      ENABLE_ROS_TESTING: ${{ matrix.enable_testing }}
+    steps:
+      - name: Install git
+        run: dnf install -y git
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: src/rqt_multiplot_plugin
+
+      - name: Set up ROS RPM repositories
+        run: ./src/rqt_multiplot_plugin/scripts/setup_ros_rpm.sh
+
+      - name: Install dependencies
+        run: |
+          if [[ -f /etc/profile.d/ros-os-override.sh ]]; then
+            source /etc/profile.d/ros-os-override.sh
+          fi
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" \
+            --dependency-types buildtool \
+            --dependency-types build \
+            --dependency-types build_export \
+            --dependency-types exec \
+            --dependency-types test \
+            --skip-keys clang-tidy \
+            --skip-keys ament_cmake_clang_format
+
+      - name: Build
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          colcon build --packages-select rqt_multiplot --event-handlers console_direct+ \
+            --cmake-args -DRQT_MULTIPLOT_CLANG_LINT=OFF
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          source install/setup.bash
+          colcon test --packages-select rqt_multiplot --event-handlers console_direct+ \
+            --ctest-args " -L" "^unit_testing$"
+          colcon test-result --verbose
+
+  rpm-packaging:
+    name: rpm-packaging / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: el9-jazzy
+            image: almalinux:9
+            ros_distro: jazzy
+            enable_testing: "0"
+          - name: el10-lyrical
+            image: almalinux:10
+            ros_distro: lyrical
+            enable_testing: "0"
+          - name: el10-rolling
+            image: almalinux:10
+            ros_distro: rolling
+            enable_testing: "1"
+          - name: fc43-lyrical
+            image: fedora:43
+            ros_distro: lyrical
+            enable_testing: "1"
+          - name: fc44-rolling
+            image: fedora:44
+            ros_distro: rolling
+            enable_testing: "1"
+    container:
+      image: ${{ matrix.image }}
+    env:
+      ROS_DISTRO: ${{ matrix.ros_distro }}
+      ENABLE_ROS_TESTING: ${{ matrix.enable_testing }}
+    steps:
+      - name: Install git
+        run: dnf install -y git
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: src/rqt_multiplot_plugin
+          fetch-depth: 0
+
+      - name: Set up ROS RPM repositories
+        run: ./src/rqt_multiplot_plugin/scripts/setup_ros_rpm.sh
+
+      - name: Install dependencies
+        run: |
+          if [[ -f /etc/profile.d/ros-os-override.sh ]]; then
+            source /etc/profile.d/ros-os-override.sh
+          fi
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" \
+            --dependency-types buildtool \
+            --dependency-types build \
+            --dependency-types build_export \
+            --dependency-types exec \
+            --skip-keys clang-tidy \
+            --skip-keys ament_cmake_clang_format
+
+      - name: Build RPM
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          ./src/rqt_multiplot_plugin/scripts/build_continuous_rpm.sh "${PWD}/rpm-packages"
+
+      - name: Upload RPM packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: rpm-${{ matrix.name }}
+          path: rpm-packages/*
+          retention-days: 7
+          if-no-files-found: error
+
+  continuous-release:
+    name: continuous-release
+    needs:
+      - debian-packaging
+      - rpm-packaging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download Debian packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: debian-*
+          path: debian-packages
+          merge-multiple: true
+
+      - name: Download RPM packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: rpm-*
+          path: rpm-packages
+          merge-multiple: true
+
+      - name: Publish continuous prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(debian-packages/* rpm-packages/*)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "no packages downloaded" >&2
+            exit 1
+          fi
+
+          eval "$(./scripts/continuous_deb_version.sh)"
+          tag="continuous/${STAMP}-${SHA}"
+          title=$(printf 'continuous %s %s-%s-%s %s:%s:%s UTC %s' \
+            "${BASE}" \
+            "${STAMP:0:4}" "${STAMP:4:2}" "${STAMP:6:2}" \
+            "${STAMP:8:2}" "${STAMP:10:2}" "${STAMP:12:2}" \
+            "${SHA}")
+          notes=$(cat <<EOF
+          Continuous build of ${SHA}. Not a ROS bloom release.
+
+          Package version \`${CONTINUOUS_VERSION}\` sorts below a bloom package of the same package.xml version. Debian and RPM packages use that version.
+          EOF
+          )
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release edit "${tag}" --title "${title}" --prerelease
+            gh release upload "${tag}" "${files[@]}" --clobber
+          else
+            gh release create "${tag}" \
+              --prerelease \
+              --title "${title}" \
+              --notes "${notes}" \
+              "${files[@]}"
+          fi

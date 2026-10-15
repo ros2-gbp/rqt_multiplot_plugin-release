@@ -1,0 +1,318 @@
+#include <cstdlib>
+
+#include <QAction>
+#include <QApplication>
+#include <QDockWidget>
+#include <QFrame>
+#include <QGridLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLayout>
+#include <QMargins>
+#include <QMenu>
+#include <QMenuBar>
+#include <QPushButton>
+#include <QSpacerItem>
+
+#include <gtest/gtest.h>
+
+#include "rqt_multiplot/ConfigComboBox.hpp"
+#include "rqt_multiplot/MultiplotConfigWidget.hpp"
+#include "rqt_multiplot/MultiplotWidget.hpp"
+#include "rqt_multiplot/PlotTableConfigWidget.hpp"
+#include "rqt_multiplot/PlotWidget.hpp"
+#include "rqt_multiplot/ProgressWidget.hpp"
+
+namespace {
+
+using rqt_multiplot::ConfigComboBox;
+using rqt_multiplot::MultiplotConfigWidget;
+using rqt_multiplot::MultiplotWidget;
+using rqt_multiplot::PlotTableConfigWidget;
+using rqt_multiplot::PlotWidget;
+using rqt_multiplot::ProgressWidget;
+
+QApplication* ensureApplication() {
+  if (QApplication::instance() != nullptr) {
+    return qobject_cast<QApplication*>(QApplication::instance());
+  }
+  qputenv("QT_QPA_PLATFORM", "offscreen");
+  static int argc = 1;
+  static char arg0[] = "test_rqt_multiplot";
+  static char* argv[] = {arg0, nullptr};
+  return new QApplication(argc, argv);
+}
+
+QStringList fileMenuActionTexts(const QMenuBar& menuBar) {
+  QStringList texts;
+  const QList<QAction*> topLevelActions = menuBar.actions();
+  if (topLevelActions.isEmpty()) {
+    return texts;
+  }
+
+  QMenu* fileMenu = topLevelActions.first()->menu();
+  if (fileMenu == nullptr) {
+    return texts;
+  }
+
+  for (QAction* action : fileMenu->actions()) {
+    if (action->isSeparator()) {
+      texts.append(QStringLiteral("<separator>"));
+    } else {
+      texts.append(action->text());
+    }
+  }
+  return texts;
+}
+
+int gridLayoutRow(QGridLayout& layout, const QWidget& widget) {
+  for (int index = 0; index < layout.count(); ++index) {
+    QLayoutItem* item = layout.itemAt(index);
+    if (item == nullptr || item->widget() != &widget) {
+      continue;
+    }
+
+    int row = 0;
+    int column = 0;
+    int rowSpan = 0;
+    int columnSpan = 0;
+    layout.getItemPosition(index, &row, &column, &rowSpan, &columnSpan);
+    return row;
+  }
+
+  return -1;
+}
+
+int gridLayoutColumnForLayout(QGridLayout& layout, const QLayout& nestedLayout) {
+  for (int index = 0; index < layout.count(); ++index) {
+    QLayoutItem* item = layout.itemAt(index);
+    if (item == nullptr || item->layout() != &nestedLayout) {
+      continue;
+    }
+
+    int row = 0;
+    int column = 0;
+    int rowSpan = 0;
+    int columnSpan = 0;
+    layout.getItemPosition(index, &row, &column, &rowSpan, &columnSpan);
+    return column;
+  }
+
+  return -1;
+}
+
+int gridLayoutColumn(QGridLayout& layout, const QWidget& widget) {
+  for (int index = 0; index < layout.count(); ++index) {
+    QLayoutItem* item = layout.itemAt(index);
+    if (item == nullptr || item->widget() != &widget) {
+      continue;
+    }
+
+    int row = 0;
+    int column = 0;
+    int rowSpan = 0;
+    int columnSpan = 0;
+    layout.getItemPosition(index, &row, &column, &rowSpan, &columnSpan);
+    return column;
+  }
+
+  return -1;
+}
+
+bool shareToolbarRow(const MultiplotWidget& widget, const QWidget& left, const QWidget& right) {
+  auto* toolbarLayout = widget.findChild<QGridLayout*>("gridLayout_3");
+  if (toolbarLayout == nullptr) {
+    return false;
+  }
+
+  const int leftRow = gridLayoutRow(*toolbarLayout, left);
+  const int rightRow = gridLayoutRow(*toolbarLayout, right);
+  return leftRow >= 0 && leftRow == rightRow;
+}
+
+}  // namespace
+
+TEST(MultiplotFileMenu, hasFileMenuWithExpectedActions) {
+  ensureApplication();
+
+  MultiplotWidget widget;
+  const auto* menuBar = widget.findChild<QMenuBar*>("menuBar");
+  ASSERT_NE(menuBar, nullptr);
+
+  const QStringList texts = fileMenuActionTexts(*menuBar);
+  EXPECT_EQ(
+      texts,
+      QStringList({QStringLiteral("New configuration"), QStringLiteral("Open configuration..."), QStringLiteral("Save configuration"),
+                   QStringLiteral("Save configuration as..."), QStringLiteral("<separator>"), QStringLiteral("Clear configuration history"),
+                   QStringLiteral("<separator>"), QStringLiteral("Import from bag files..."), QStringLiteral("Add bag files..."),
+                   QStringLiteral("Import from bag directory..."), QStringLiteral("Add bag directory..."), QStringLiteral("<separator>"),
+                   QStringLiteral("Overlay bag files..."), QStringLiteral("Overlay offsets..."), QStringLiteral("<separator>"),
+                   QStringLiteral("Export to image file..."), QStringLiteral("Export to text file..."), QStringLiteral("<separator>"),
+                   QStringLiteral("Preferences...")}));
+}
+
+TEST(MultiplotFileMenu, configButtonsRemovedFromToolbar) {
+  ensureApplication();
+
+  MultiplotWidget widget;
+  auto* configWidget = widget.findChild<MultiplotConfigWidget*>("configWidget");
+  ASSERT_NE(configWidget, nullptr);
+
+  EXPECT_EQ(configWidget->findChild<QPushButton*>("pushButtonNew"), nullptr);
+  EXPECT_EQ(configWidget->findChild<QPushButton*>("pushButtonOpen"), nullptr);
+  EXPECT_EQ(configWidget->findChild<QPushButton*>("pushButtonSave"), nullptr);
+  EXPECT_EQ(configWidget->findChild<QPushButton*>("pushButtonSaveAs"), nullptr);
+  EXPECT_EQ(configWidget->findChild<QPushButton*>("pushButtonClearHistory"), nullptr);
+  EXPECT_NE(configWidget->findChild<ConfigComboBox*>("configComboBox"), nullptr);
+}
+
+TEST(MultiplotFileMenu, globalImportExportButtonsRemovedFromPlotsToolbar) {
+  ensureApplication();
+
+  MultiplotWidget widget;
+  auto* plotToolbar = widget.findChild<PlotTableConfigWidget*>("plotTableConfigWidget");
+  ASSERT_NE(plotToolbar, nullptr);
+
+  EXPECT_EQ(plotToolbar->findChild<QPushButton*>("pushButtonImport"), nullptr);
+  EXPECT_EQ(plotToolbar->findChild<QPushButton*>("pushButtonExport"), nullptr);
+  EXPECT_NE(plotToolbar->findChild<QPushButton*>("pushButtonRun"), nullptr);
+  EXPECT_NE(plotToolbar->findChild<QPushButton*>("pushButtonPause"), nullptr);
+  EXPECT_NE(plotToolbar->findChild<QPushButton*>("pushButtonClear"), nullptr);
+}
+
+TEST(MultiplotFileMenu, configAndPlotsShareOneToolbarRow) {
+  ensureApplication();
+
+  MultiplotWidget widget;
+  auto* configWidget = widget.findChild<MultiplotConfigWidget*>("configWidget");
+  auto* plotToolbar = widget.findChild<PlotTableConfigWidget*>("plotTableConfigWidget");
+  ASSERT_NE(configWidget, nullptr);
+  ASSERT_NE(plotToolbar, nullptr);
+
+  EXPECT_TRUE(shareToolbarRow(widget, *configWidget, *plotToolbar));
+
+  const auto* configLabel = widget.findChild<QLabel*>("labelConfig");
+  const auto* plotsLabel = widget.findChild<QLabel*>("labelPlots");
+  ASSERT_NE(configLabel, nullptr);
+  ASSERT_NE(plotsLabel, nullptr);
+  EXPECT_EQ(configLabel->text(), QStringLiteral("Config:"));
+  EXPECT_EQ(plotsLabel->text(), QStringLiteral("Plots:"));
+}
+
+TEST(MultiplotFileMenu, saveAndClearHistoryStartDisabled) {
+  ensureApplication();
+
+  MultiplotConfigWidget configWidget;
+  EXPECT_FALSE(configWidget.getActionSave()->isEnabled());
+  EXPECT_FALSE(configWidget.getActionClearHistory()->isEnabled());
+}
+
+TEST(MultiplotFileMenu, progressWidgetNotOnMainToolbarRow) {
+  ensureApplication();
+
+  PlotTableConfigWidget toolbar;
+  auto* progress = toolbar.findChild<ProgressWidget*>("widgetProgress");
+  ASSERT_NE(progress, nullptr);
+
+  auto* gridLayout = toolbar.findChild<QGridLayout*>("gridLayout");
+  ASSERT_NE(gridLayout, nullptr);
+  EXPECT_EQ(gridLayoutRow(*gridLayout, *progress), 1);
+}
+
+TEST(MultiplotFileMenu, plotsToolbarLayoutHasNoContentsMargins) {
+  ensureApplication();
+
+  PlotTableConfigWidget toolbar;
+  auto* gridLayout = toolbar.findChild<QGridLayout*>("gridLayout");
+  ASSERT_NE(gridLayout, nullptr);
+  EXPECT_EQ(gridLayout->contentsMargins(), QMargins());
+}
+
+TEST(MultiplotFileMenu, plotsToolbarSeparatorsAreVerticalLines) {
+  ensureApplication();
+
+  PlotTableConfigWidget toolbar;
+  const QStringList names(
+      {QStringLiteral("line_3"), QStringLiteral("line_4"), QStringLiteral("line_5"), QStringLiteral("line_6"), QStringLiteral("line_7")});
+  for (const QString& name : names) {
+    auto* line = toolbar.findChild<QFrame*>(name);
+    ASSERT_NE(line, nullptr) << qPrintable(name);
+    EXPECT_EQ(line->frameShape(), QFrame::VLine) << qPrintable(name);
+  }
+}
+
+TEST(MultiplotFileMenu, idleToolbarHasExpandingSpacerBeforePlaybackButtons) {
+  ensureApplication();
+
+  PlotTableConfigWidget toolbar;
+  auto* gridLayout = toolbar.findChild<QGridLayout*>("gridLayout");
+  auto* resetButton = toolbar.findChild<QPushButton*>("pushButtonResetLayout");
+  auto* playbackLayout = toolbar.findChild<QHBoxLayout*>("horizontalLayout");
+  ASSERT_NE(gridLayout, nullptr);
+  ASSERT_NE(resetButton, nullptr);
+  ASSERT_NE(playbackLayout, nullptr);
+
+  const int resetColumn = gridLayoutColumn(*gridLayout, *resetButton);
+  const int playbackColumn = gridLayoutColumnForLayout(*gridLayout, *playbackLayout);
+  ASSERT_GE(resetColumn, 0);
+  ASSERT_GE(playbackColumn, 0);
+
+  bool foundExpandingSpacer = false;
+  for (int index = 0; index < gridLayout->count(); ++index) {
+    QLayoutItem* item = gridLayout->itemAt(index);
+    if (item == nullptr) {
+      continue;
+    }
+
+    int row = 0;
+    int column = 0;
+    int rowSpan = 0;
+    int columnSpan = 0;
+    gridLayout->getItemPosition(index, &row, &column, &rowSpan, &columnSpan);
+    if (row != 0 || column <= resetColumn || column >= playbackColumn) {
+      continue;
+    }
+
+    QSpacerItem* spacer = item->spacerItem();
+    if (spacer != nullptr && spacer->expandingDirections().testFlag(Qt::Horizontal)) {
+      foundExpandingSpacer = true;
+      break;
+    }
+  }
+
+  EXPECT_TRUE(foundExpandingSpacer);
+}
+
+TEST(MultiplotFileMenu, perPlotExportButtonRemovedFromHeader) {
+  ensureApplication();
+
+  PlotWidget plotWidget;
+  EXPECT_EQ(plotWidget.findChild<QPushButton*>("pushButtonImportExport"), nullptr);
+}
+
+TEST(MultiplotFileMenu, hasQuitActionWhenTopLevelWindow) {
+  ensureApplication();
+
+  MultiplotWidget widget;
+  widget.show();
+  QApplication::processEvents();
+
+  const auto* menuBar = widget.findChild<QMenuBar*>("menuBar");
+  ASSERT_NE(menuBar, nullptr);
+  EXPECT_TRUE(fileMenuActionTexts(*menuBar).contains(QStringLiteral("Quit")));
+}
+
+TEST(MultiplotFileMenu, noQuitActionWhenDocked) {
+  ensureApplication();
+
+  QDockWidget dock;
+  MultiplotWidget widget;
+  dock.setWidget(&widget);
+  dock.show();
+  widget.show();
+  QApplication::processEvents();
+
+  const auto* menuBar = widget.findChild<QMenuBar*>("menuBar");
+  ASSERT_NE(menuBar, nullptr);
+  EXPECT_FALSE(fileMenuActionTexts(*menuBar).contains(QStringLiteral("Quit")));
+}

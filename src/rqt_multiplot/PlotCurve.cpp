@@ -1,0 +1,721 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#include <algorithm>
+
+#include "rqt_multiplot/CurveData.hpp"
+#include "rqt_multiplot/CurveDataCircularBuffer.hpp"
+#include "rqt_multiplot/CurveDataList.hpp"
+#include "rqt_multiplot/CurveDataListTimeFrame.hpp"
+#include "rqt_multiplot/CurveDataSequencer.hpp"
+#include "rqt_multiplot/CurveDataVector.hpp"
+#include "rqt_multiplot/PlotLegendStyle.hpp"
+#include "rqt_multiplot/PlotWidget.hpp"
+
+#include <qwt/qwt_legend_data.h>
+#include <qwt/qwt_plot.h>
+#include <qwt/qwt_text.h>
+
+#include "rqt_multiplot/PlotCurve.hpp"
+
+namespace rqt_multiplot {
+
+PlotCurve::PlotCurve(QObject* parent)
+    : QObject(parent),
+      config_(nullptr),
+      broker_(nullptr),
+      data_(new CurveDataVector()),
+      dataSequencer_(new CurveDataSequencer(this)),
+      paused_(true),
+      snapshotDataBackend_(false),
+      appliedUnitConversion_{CurveAxisConfig::None, CurveAxisConfig::None} {
+  qRegisterMetaType<BoundingRectangle>("BoundingRectangle");
+  qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
+
+  connect(dataSequencer_, SIGNAL(pointReceived(const QPointF&)), this, SLOT(dataSequencerPointReceived(const QPointF&)));
+  connect(dataSequencer_, SIGNAL(seriesReceived(const QVector<QPointF>&)), this,
+          SLOT(dataSequencerSeriesReceived(const QVector<QPointF>&)));
+
+  setData(data_);
+}
+
+PlotCurve::~PlotCurve() {
+  pause();
+  detach();
+  clearGhosts();
+}
+
+void PlotCurve::setConfig(CurveConfig* config) {
+  if (config != config_) {
+    if (config_ != nullptr) {
+      disconnect(config_, SIGNAL(titleChanged(const QString&)), this, SLOT(configTitleChanged(const QString&)));
+      disconnect(config_->getAxisConfig(CurveConfig::X), SIGNAL(changed()), this, SLOT(configAxisConfigChanged()));
+      disconnect(config_->getAxisConfig(CurveConfig::Y), SIGNAL(changed()), this, SLOT(configAxisConfigChanged()));
+      disconnect(config_->getColorConfig(), SIGNAL(currentColorChanged(const QColor&)), this,
+                 SLOT(configColorConfigCurrentColorChanged(const QColor&)));
+      disconnect(config_->getStyleConfig(), SIGNAL(changed()), this, SLOT(configStyleConfigChanged()));
+      disconnect(config_->getDataConfig(), SIGNAL(changed()), this, SLOT(configDataConfigChanged()));
+      disconnect(config_->getFilterChainConfig(), SIGNAL(changed()), this, SLOT(configFilterChainConfigChanged()));
+
+      dataSequencer_->setConfig(nullptr);
+    }
+
+    config_ = config;
+
+    if (config != nullptr) {
+      connect(config, SIGNAL(titleChanged(const QString&)), this, SLOT(configTitleChanged(const QString&)));
+      connect(config->getAxisConfig(CurveConfig::X), SIGNAL(changed()), this, SLOT(configAxisConfigChanged()));
+      connect(config->getAxisConfig(CurveConfig::Y), SIGNAL(changed()), this, SLOT(configAxisConfigChanged()));
+      connect(config->getColorConfig(), SIGNAL(currentColorChanged(const QColor&)), this,
+              SLOT(configColorConfigCurrentColorChanged(const QColor&)));
+      connect(config->getStyleConfig(), SIGNAL(changed()), this, SLOT(configStyleConfigChanged()));
+      connect(config->getDataConfig(), SIGNAL(changed()), this, SLOT(configDataConfigChanged()));
+      connect(config->getFilterChainConfig(), SIGNAL(changed()), this, SLOT(configFilterChainConfigChanged()));
+
+      syncAppliedUnitConversions();
+      configTitleChanged(config->getTitle());
+      configAxisConfigChanged();
+      configColorConfigCurrentColorChanged(config->getColorConfig()->getCurrentColor());
+      configStyleConfigChanged();
+      configDataConfigChanged();
+
+      dataSequencer_->setConfig(config);
+      updateSnapshotHistoryCapacity();
+    }
+  }
+}
+
+CurveConfig* PlotCurve::getConfig() const {
+  return config_;
+}
+
+void PlotCurve::setPlotTimeWindowLength(std::optional<int> length) {
+  if (length != plotTimeWindowLength_) {
+    plotTimeWindowLength_ = length;
+    createDataBackend();
+    emit replotRequested();
+  }
+}
+
+void PlotCurve::setBroker(MessageBroker* broker) {
+  if (broker != broker_) {
+    broker_ = broker;
+
+    dataSequencer_->setBroker(broker);
+  }
+}
+
+MessageBroker* PlotCurve::getBroker() const {
+  return broker_;
+}
+
+CurveData* PlotCurve::getData() const {
+  return data_;
+}
+
+const CurveData* PlotCurve::getRawData() const {
+  return rawData_ ? rawData_.get() : data_;
+}
+
+CurveDataSequencer* PlotCurve::getDataSequencer() const {
+  return dataSequencer_;
+}
+
+QPair<double, double> PlotCurve::getPreferredAxisScale(CurveConfig::Axis axis) const {
+  QPair<double, double> axisBounds(0.0, -1.0);
+
+  if (config_ != nullptr) {
+    CurveAxisScaleConfig* axisScaleConfig = config_->getAxisConfig(axis)->getScaleConfig();
+
+    if (axisScaleConfig->getType() == CurveAxisScaleConfig::Absolute) {
+      axisBounds.first = axisScaleConfig->getAbsoluteMinimum();
+      axisBounds.second = axisScaleConfig->getAbsoluteMaximum();
+    } else if (axisScaleConfig->getType() == CurveAxisScaleConfig::Relative) {
+      if (!data_->isEmpty()) {
+        size_t index = data_->getNumPoints() - 1;
+
+        axisBounds.first = data_->getValue(index, axis) + axisScaleConfig->getRelativeMinimum();
+        axisBounds.second = data_->getValue(index, axis) + axisScaleConfig->getRelativeMaximum();
+      }
+    } else {
+      axisBounds = data_->getAxisBounds(axis);
+      for (const auto& frame : snapshotHistory_.frames()) {
+        for (const auto& point : frame) {
+          const double value = (axis == CurveConfig::X) ? point.x() : point.y();
+          if (axisBounds.first > axisBounds.second) {
+            axisBounds.first = value;
+            axisBounds.second = value;
+          } else {
+            axisBounds.first = std::min(axisBounds.first, value);
+            axisBounds.second = std::max(axisBounds.second, value);
+          }
+        }
+      }
+    }
+  }
+
+  return axisBounds;
+}
+
+std::optional<double> PlotCurve::getMinimumPositive(CurveConfig::Axis axis) const {
+  std::optional<double> minimum;
+  const auto consider = [&minimum](double value) {
+    if (value > 0.0 && (!minimum.has_value() || value < *minimum)) {
+      minimum = value;
+    }
+  };
+
+  if (data_ != nullptr) {
+    for (size_t index = 0; index < data_->getNumPoints(); ++index) {
+      consider(data_->getValue(index, axis));
+    }
+  }
+  for (const auto& frame : snapshotHistory_.frames()) {
+    for (const auto& point : frame) {
+      consider((axis == CurveConfig::X) ? point.x() : point.y());
+    }
+  }
+  return minimum;
+}
+
+BoundingRectangle PlotCurve::getPreferredScale() const {
+  if (!isVisible()) {
+    return BoundingRectangle();
+  }
+
+  QPair<double, double> xAxisBounds = getPreferredAxisScale(CurveConfig::X);
+  QPair<double, double> yAxisBounds = getPreferredAxisScale(CurveConfig::Y);
+
+  return BoundingRectangle(QPointF(xAxisBounds.first, yAxisBounds.first), QPointF(xAxisBounds.second, yAxisBounds.second));
+}
+
+void PlotCurve::setVisible(bool on) {
+  const bool changed = (on != isVisible());
+  QwtPlotCurve::setVisible(on);
+  for (auto* ghost : ghosts_) {
+    ghost->setVisible(on);
+  }
+
+  if (changed) {
+    emit preferredScaleChanged(getPreferredScale());
+    emit replotRequested();
+  }
+}
+
+QList<QwtLegendData> PlotCurve::legendData() const {
+  QList<QwtLegendData> list = QwtPlotCurve::legendData();
+  if (isVisible()) {
+    return list;
+  }
+
+  for (QwtLegendData& data : list) {
+    QwtText title = data.title();
+    const QPalette pal = (plot() != nullptr) ? plot()->palette() : QApplication::palette();
+    applyLegendVisibilityStyle(title, false, pal);
+    data.setValue(QwtLegendData::TitleRole, QVariant::fromValue(title));
+  }
+  return list;
+}
+
+void PlotCurve::attach(QwtPlot* plot) {
+  if (plot != nullptr) {
+    plot->setAutoDelete(false);
+  }
+  QwtPlotCurve::attach(plot);
+  for (auto* ghost : ghosts_) {
+    ghost->attach(plot);
+  }
+}
+
+void PlotCurve::detach() {
+  for (auto* ghost : ghosts_) {
+    if (ghost->plot() != nullptr) {
+      ghost->detach();
+    }
+  }
+  if (plot() != nullptr) {
+    QwtPlotCurve::detach();
+  }
+}
+
+void PlotCurve::run() {
+  if (config_ == nullptr) {
+    return;
+  }
+
+  CurveAxisConfig* xAxisConfig = config_->getAxisConfig(CurveConfig::X);
+  CurveAxisConfig* yAxisConfig = config_->getAxisConfig(CurveConfig::Y);
+
+  if (paused_ && xAxisConfig->hasConfiguredSource() && yAxisConfig->hasConfiguredSource()) {
+    dataSequencer_->subscribe();
+
+    paused_ = false;
+  }
+}
+
+void PlotCurve::pause() {
+  if (!paused_) {
+    dataSequencer_->unsubscribe();
+
+    paused_ = true;
+  }
+}
+
+void PlotCurve::clear() {
+  data_->clearPoints();
+  if (rawData_) {
+    rawData_->clearPoints();
+  }
+  filterChain_.reset();
+  snapshotHistory_.clear();
+  clearGhosts();
+
+  emit replotRequested();
+}
+
+void PlotCurve::copyDataFrom(const PlotCurve& source) {
+  if (snapshotDataBackend_ || source.snapshotDataBackend_) {
+    return;
+  }
+  const BoundingRectangle oldBounds = getPreferredScale();
+
+  const QVector<QPointF> points = copyPoints(*source.getRawData());
+  if (rawData_) {
+    rawData_->replacePoints(points);
+    replayFilters();
+  } else {
+    data_->replacePoints(points);
+  }
+
+  notifyDataReplaced(oldBounds);
+}
+
+void PlotCurve::setOverlaySource(int bag, const QString& label) {
+  overlayBag_ = bag;
+  overlayLabel_ = label;
+  if (config_ != nullptr) {
+    configTitleChanged(config_->getTitle());
+    configColorConfigCurrentColorChanged(config_->getColorConfig()->getCurrentColor());
+    configStyleConfigChanged();
+  }
+}
+
+int PlotCurve::getOverlayBag() const {
+  return overlayBag_;
+}
+
+QString PlotCurve::getOverlayLabel() const {
+  return overlayLabel_;
+}
+
+void PlotCurve::setXOffset(double offset) {
+  const double delta = offset - xOffset_;
+  xOffset_ = offset;
+  if ((delta == 0.0) || !appliesXOffset()) {
+    return;
+  }
+
+  const BoundingRectangle oldBounds = getPreferredScale();
+  shiftStoredX(delta);
+  notifyDataReplaced(oldBounds);
+}
+
+double PlotCurve::getXOffset() const {
+  return xOffset_;
+}
+
+bool PlotCurve::appliesXOffset() const {
+  return (config_ != nullptr) && !snapshotDataBackend_ && config_->getAxisConfig(CurveConfig::X)->isTimeSource();
+}
+
+void PlotCurve::shiftStoredX(double delta) {
+  CurveData* stored = rawData_ ? rawData_.get() : data_;
+  QVector<QPointF> points = copyPoints(*stored);
+  for (QPointF& point : points) {
+    point.rx() += delta;
+  }
+  stored->replacePoints(points);
+  if (rawData_) {
+    replayFilters();
+  }
+}
+
+Qt::PenStyle PlotCurve::overlayPenStyle(int bag) {
+  return (bag % 2 == 1) ? Qt::DashLine : Qt::DotLine;
+}
+
+QColor PlotCurve::overlayPenColor(const QColor& color) const {
+  if (overlayBag_ <= 0) {
+    return color;
+  }
+
+  QColor faded = color;
+  const int baseAlpha = (faded.alpha() > 0) ? faded.alpha() : 255;
+  // One step past the newest array-history ghost, about half opacity.
+  constexpr size_t kOverlayFadeAge = 1;
+  constexpr size_t kOverlayFadeHistory = 2;
+  faded.setAlpha(snapshotFadeAlpha(baseAlpha, kOverlayFadeAge, kOverlayFadeHistory));
+  return faded;
+}
+
+QVector<QPointF> PlotCurve::copyPoints(const CurveData& data) {
+  QVector<QPointF> points;
+  points.reserve(static_cast<int>(data.getNumPoints()));
+  for (size_t i = 0; i < data.getNumPoints(); ++i) {
+    points.append(data.getPoint(i));
+  }
+  return points;
+}
+
+void PlotCurve::createDataBackend() {
+  snapshotDataBackend_ = (config_ != nullptr) && CurveDataSequencer::isSnapshotConfig(*config_);
+
+  data_ = newDataBackend();
+  setData(data_);
+
+  rebuildFilterChain();
+  rawData_.reset(isFilterActive() ? newDataBackend() : nullptr);
+}
+
+CurveData* PlotCurve::newDataBackend() const {
+  if (snapshotDataBackend_ || (config_ == nullptr)) {
+    return new CurveDataVector();
+  }
+  if (plotTimeWindowLength_.has_value()) {
+    return new CurveDataListTimeFrame(static_cast<double>(*plotTimeWindowLength_));
+  }
+
+  CurveDataConfig* dataConfig = config_->getDataConfig();
+  switch (dataConfig->getType()) {
+    case CurveDataConfig::List:
+      return new CurveDataList();
+    case CurveDataConfig::CircularBuffer:
+      return new CurveDataCircularBuffer(dataConfig->getCircularBufferCapacity());
+    case CurveDataConfig::TimeFrame:
+      return new CurveDataListTimeFrame(dataConfig->getTimeFrameLength());
+    case CurveDataConfig::Vector:
+    default:
+      return new CurveDataVector();
+  }
+}
+
+bool PlotCurve::isFilterActive() const {
+  return !filterChain_.isEmpty();
+}
+
+void PlotCurve::rebuildFilterChain() {
+  if ((config_ == nullptr) || snapshotDataBackend_) {
+    filterChain_ = CurveFilterChain();
+  } else {
+    filterChain_ = CurveFilterChain(config_->getFilterChainConfig()->getFilters());
+  }
+}
+
+void PlotCurve::replayFilters() {
+  filterChain_.reset();
+
+  QVector<QPointF> filtered;
+  filtered.reserve(static_cast<int>(rawData_->getNumPoints()));
+  for (size_t index = 0; index < rawData_->getNumPoints(); ++index) {
+    if (const auto point = filterChain_.process(rawData_->getPoint(index))) {
+      filtered.append(*point);
+    }
+  }
+  data_->replacePoints(filtered);
+}
+
+void PlotCurve::notifyDataReplaced(const BoundingRectangle& oldBounds) {
+  const BoundingRectangle bounds = getPreferredScale();
+  if (bounds != oldBounds) {
+    emit preferredScaleChanged(bounds);
+  }
+  emit replotRequested();
+}
+
+void PlotCurve::updateSnapshotHistoryCapacity() {
+  const bool snapshot = (config_ != nullptr) && CurveDataSequencer::isSnapshotConfig(*config_);
+  const size_t capacity = snapshot ? config_->getStyleConfig()->getFadeHistory() : 0;
+  snapshotHistory_.setCapacity(capacity);
+  syncGhosts();
+}
+
+void PlotCurve::styleGhost(QwtPlotCurve* ghost, size_t age, size_t count) const {
+  ghost->setStyle(style());
+  ghost->setOrientation(orientation());
+  ghost->setBaseline(baseline());
+  ghost->setCurveAttribute(QwtPlotCurve::Fitted, testCurveAttribute(QwtPlotCurve::Fitted));
+  ghost->setCurveAttribute(QwtPlotCurve::Inverted, testCurveAttribute(QwtPlotCurve::Inverted));
+  ghost->setRenderHint(QwtPlotItem::RenderAntialiased, testRenderHint(QwtPlotItem::RenderAntialiased));
+  ghost->setZ(z() - static_cast<double>(age));
+
+  QPen ghostPen = pen();
+  QColor color = ghostPen.color();
+  const int baseAlpha = (color.alpha() > 0) ? color.alpha() : 255;
+  color.setAlpha(snapshotFadeAlpha(baseAlpha, age, count));
+  ghostPen.setColor(color);
+  ghost->setPen(ghostPen);
+}
+
+void PlotCurve::restyleGhosts() {
+  const auto count = static_cast<size_t>(snapshotHistory_.frames().size());
+  for (int i = 0; i < ghosts_.size(); ++i) {
+    styleGhost(ghosts_[i], static_cast<size_t>(i) + 1U, count);
+  }
+}
+
+void PlotCurve::clearGhosts() {
+  for (auto* ghost : ghosts_) {
+    ghost->detach();
+    delete ghost;
+  }
+  ghosts_.clear();
+}
+
+void PlotCurve::syncGhosts() {
+  const auto& frames = snapshotHistory_.frames();
+  while (ghosts_.size() > frames.size()) {
+    ghosts_.last()->detach();
+    delete ghosts_.takeLast();
+  }
+
+  QwtPlot* attachedPlot = plot();
+  while (ghosts_.size() < frames.size()) {
+    auto* ghost = new QwtPlotCurve();
+    ghost->setItemAttribute(QwtPlotItem::Legend, false);
+    ghost->setTitle(QString());
+    ghost->setVisible(isVisible());
+    if (attachedPlot != nullptr) {
+      ghost->attach(attachedPlot);
+    }
+    ghosts_.append(ghost);
+  }
+
+  const auto count = static_cast<size_t>(frames.size());
+  for (int i = 0; i < frames.size(); ++i) {
+    styleGhost(ghosts_[i], static_cast<size_t>(i) + 1U, count);
+    ghosts_[i]->setSamples(frames[i]);
+  }
+}
+
+void PlotCurve::configTitleChanged(const QString& title) {
+  setTitle(overlayLabel_.isEmpty() ? title : QString("%1 [%2]").arg(title, overlayLabel_));
+}
+
+void PlotCurve::rescaleStoredAxis(CurveConfig::Axis axis, double factor) {
+  if ((data_ == nullptr) || factor == 1.0) {
+    return;
+  }
+
+  CurveData* stored = rawData_ ? rawData_.get() : data_;
+  QVector<QPointF> points;
+  points.reserve(static_cast<int>(stored->getNumPoints()));
+  for (size_t index = 0; index < stored->getNumPoints(); ++index) {
+    QPointF point = stored->getPoint(index);
+    if (axis == CurveConfig::X) {
+      point.setX(point.x() * factor);
+    } else {
+      point.setY(point.y() * factor);
+    }
+    points.append(point);
+  }
+  stored->replacePoints(points);
+  if (rawData_) {
+    replayFilters();
+  }
+  snapshotHistory_.rescaleAxis(static_cast<int>(axis), factor);
+  syncGhosts();
+}
+
+void PlotCurve::syncAppliedUnitConversions() {
+  if (config_ == nullptr) {
+    appliedUnitConversion_[0] = CurveAxisConfig::None;
+    appliedUnitConversion_[1] = CurveAxisConfig::None;
+    return;
+  }
+
+  appliedUnitConversion_[0] = config_->getAxisConfig(CurveConfig::X)->getUnitConversion();
+  appliedUnitConversion_[1] = config_->getAxisConfig(CurveConfig::Y)->getUnitConversion();
+}
+
+void PlotCurve::configAxisConfigChanged() {
+  bool replotNeeded = false;
+  std::optional<BoundingRectangle> oldBounds;
+
+  if (config_ != nullptr) {
+    for (int axisIndex = 0; axisIndex < 2; ++axisIndex) {
+      const auto axis = static_cast<CurveConfig::Axis>(axisIndex);
+      const auto current = config_->getAxisConfig(axis)->getUnitConversion();
+      const auto previous = appliedUnitConversion_[axisIndex];
+      if (current == previous) {
+        continue;
+      }
+
+      const double factor = CurveAxisConfig::conversionFactor(current) / CurveAxisConfig::conversionFactor(previous);
+      if (factor != 1.0) {
+        if (!replotNeeded) {
+          oldBounds = getPreferredScale();
+        }
+        rescaleStoredAxis(axis, factor);
+        replotNeeded = true;
+      }
+      appliedUnitConversion_[axisIndex] = current;
+    }
+  }
+
+  const bool snapshot = (config_ != nullptr) && CurveDataSequencer::isSnapshotConfig(*config_);
+  if (snapshot != snapshotDataBackend_) {
+    createDataBackend();
+  }
+  updateSnapshotHistoryCapacity();
+
+  if (replotNeeded) {
+    const BoundingRectangle bounds = getPreferredScale();
+    if (!oldBounds.has_value() || bounds != *oldBounds) {
+      emit preferredScaleChanged(bounds);
+    }
+    emit replotRequested();
+  } else {
+    emit preferredScaleChanged(getPreferredScale());
+  }
+}
+
+void PlotCurve::configColorConfigCurrentColorChanged(const QColor& color) {
+  QPen colored = pen();
+  colored.setColor(overlayPenColor(color));
+  setPen(colored);
+  restyleGhosts();
+
+  emit replotRequested();
+}
+
+void PlotCurve::configStyleConfigChanged() {
+  rqt_multiplot::CurveStyleConfig* styleConfig = config_->getStyleConfig();
+
+  if (styleConfig->getType() == rqt_multiplot::CurveStyleConfig::Sticks) {
+    setStyle(QwtPlotCurve::Sticks);
+
+    setOrientation(styleConfig->getSticksOrientation());
+    setBaseline(styleConfig->getSticksBaseline());
+  } else if (styleConfig->getType() == rqt_multiplot::CurveStyleConfig::Steps) {
+    setStyle(QwtPlotCurve::Steps);
+
+    setCurveAttribute(QwtPlotCurve::Inverted, styleConfig->areStepsInverted());
+  } else if (styleConfig->getType() == rqt_multiplot::CurveStyleConfig::Points) {
+    setStyle(QwtPlotCurve::Dots);
+  } else {
+    setStyle(QwtPlotCurve::Lines);
+
+    setCurveAttribute(QwtPlotCurve::Fitted, styleConfig->areLinesInterpolated());
+  }
+
+  QPen pen = QwtPlotCurve::pen();
+
+  pen.setWidth(static_cast<int>(styleConfig->getPenWidth()));
+  pen.setStyle((overlayBag_ > 0) ? overlayPenStyle(overlayBag_) : styleConfig->getPenStyle());
+
+  setPen(pen);
+
+  setRenderHint(QwtPlotItem::RenderAntialiased, styleConfig->isRenderAntialiased());
+  updateSnapshotHistoryCapacity();
+
+  emit replotRequested();
+}
+
+void PlotCurve::configDataConfigChanged() {
+  createDataBackend();
+  emit replotRequested();
+}
+
+void PlotCurve::configFilterChainConfigChanged() {
+  const BoundingRectangle oldBounds = getPreferredScale();
+
+  rebuildFilterChain();
+  if (!isFilterActive()) {
+    if (rawData_) {
+      data_->replacePoints(copyPoints(*rawData_));
+      rawData_.reset();
+    }
+  } else {
+    if (!rawData_) {
+      rawData_.reset(newDataBackend());
+      rawData_->replacePoints(copyPoints(*data_));
+    }
+    replayFilters();
+  }
+
+  notifyDataReplaced(oldBounds);
+}
+
+void PlotCurve::dataSequencerPointReceived(const QPointF& receivedPoint) {
+  if (!paused_) {
+    QPointF shifted = receivedPoint;
+    if ((xOffset_ != 0.0) && appliesXOffset()) {
+      shifted.rx() += xOffset_;
+    }
+    std::optional<QPointF> filtered = shifted;
+    if (rawData_) {
+      rawData_->appendPoint(shifted);
+      filtered = filterChain_.process(shifted);
+      if (!filtered.has_value()) {
+        return;
+      }
+    }
+    const QPointF point = *filtered;
+
+    if (auto* plotWidget = qobject_cast<PlotWidget*>(parent())) {
+      if ((config_ != nullptr) && config_->getAxisConfig(CurveConfig::X)->isLabelFromZero()) {
+        plotWidget->bindAxisOrigin(CurveConfig::X, point.x());
+      }
+      if ((config_ != nullptr) && config_->getAxisConfig(CurveConfig::Y)->isLabelFromZero()) {
+        plotWidget->bindAxisOrigin(CurveConfig::Y, point.y());
+      }
+    }
+
+    BoundingRectangle oldBounds = getPreferredScale();
+
+    data_->appendPoint(point);
+
+    BoundingRectangle bounds = getPreferredScale();
+
+    if (bounds != oldBounds) {
+      emit preferredScaleChanged(bounds);
+    }
+
+    emit replotRequested();
+  }
+}
+
+void PlotCurve::dataSequencerSeriesReceived(const QVector<QPointF>& points) {
+  if (paused_) {
+    return;
+  }
+
+  BoundingRectangle oldBounds = getPreferredScale();
+  snapshotHistory_.push(copyPoints(*data_));
+  data_->replacePoints(points);
+  syncGhosts();
+  BoundingRectangle bounds = getPreferredScale();
+
+  if (bounds != oldBounds) {
+    emit preferredScaleChanged(bounds);
+  }
+
+  emit replotRequested();
+}
+
+}  // namespace rqt_multiplot

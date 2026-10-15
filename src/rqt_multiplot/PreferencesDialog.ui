@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PreferencesDialog</class>
+ <widget class="QDialog" name="PreferencesDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>560</width>
+    <height>460</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Preferences</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="tabPosition">
+      <enum>QTabWidget::West</enum>
+     </property>
+     <widget class="QWidget" name="tabGeneral">
+      <attribute name="title">
+       <string>General</string>
+      </attribute>
+      <layout class="QFormLayout" name="formLayout">
+       <item row="0" column="0">
+        <widget class="QLabel" name="labelTimeZone">
+         <property name="text">
+          <string>Time zone</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="rqt_multiplot::MatchFilterComboBox" name="comboTimeZone"/>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabAppearance">
+      <attribute name="title">
+       <string>Appearance</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayoutAppearance">
+       <item>
+        <layout class="QFormLayout" name="formLayoutAppearance">
+         <item row="0" column="0">
+          <widget class="QLabel" name="labelTheme">
+           <property name="text">
+            <string>Theme</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="comboTheme"/>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="labelOpenGLCanvas">
+           <property name="text">
+            <string>OpenGL canvas</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QCheckBox" name="checkOpenGLCanvas">
+           <property name="text">
+            <string>Use OpenGL for plot drawing</string>
+           </property>
+           <property name="checked">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupPlotTitles">
+         <property name="title">
+          <string>Plot titles</string>
+         </property>
+         <layout class="QFormLayout" name="formLayoutPlotTitles">
+          <item row="0" column="0">
+           <widget class="QLabel" name="labelPlotTitleFontSize">
+            <property name="text">
+             <string>Font size</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QSpinBox" name="spinPlotTitleFontSize">
+            <property name="minimum">
+             <number>6</number>
+            </property>
+            <property name="maximum">
+             <number>72</number>
+            </property>
+            <property name="value">
+             <number>11</number>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="labelPlotTitleWeight">
+            <property name="text">
+             <string>Weight</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="comboPlotTitleWeight">
+            <item>
+             <property name="text">
+              <string>Regular</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Bold</string>
+             </property>
+            </item>
+            <property name="currentIndex">
+             <number>1</number>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="labelPlotTitleColor">
+            <property name="text">
+             <string>Color</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <layout class="QHBoxLayout" name="horizontalLayoutPlotTitleColor">
+            <item>
+             <widget class="QFrame" name="framePlotTitleColor">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>23</height>
+               </size>
+              </property>
+              <property name="frameShape">
+               <enum>QFrame::StyledPanel</enum>
+              </property>
+              <property name="frameShadow">
+               <enum>QFrame::Sunken</enum>
+              </property>
+              <layout class="QGridLayout" name="gridLayoutPlotTitleColor">
+               <property name="margin">
+                <number>0</number>
+               </property>
+               <item row="0" column="0">
+                <widget class="QLabel" name="labelPlotTitleColorSwatch">
+                 <property name="cursor">
+                  <cursorShape>PointingHandCursor</cursorShape>
+                 </property>
+                 <property name="text">
+                  <string/>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignCenter</set>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QCheckBox" name="checkPlotTitleAutoColor">
+              <property name="text">
+               <string>Auto</string>
+              </property>
+              <property name="checked">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="labelPlotTitlePreviewCaption">
+            <property name="text">
+             <string>Preview</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QLabel" name="labelPlotTitlePreview">
+            <property name="text">
+             <string>Untitled Plot</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+            <property name="frameShape">
+             <enum>QFrame::StyledPanel</enum>
+            </property>
+            <property name="margin">
+             <number>8</number>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelStatus">
+     <property name="text">
+      <string>Using user defaults</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelHint">
+     <property name="text">
+      <string>Configuration overrides are stored in the plot file when you save. User defaults are stored for this user immediately.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="persistActionsLayout">
+     <item>
+      <widget class="QPushButton" name="buttonSaveAsDefaults">
+       <property name="text">
+        <string>Save as defaults</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonOverrideConfiguration">
+       <property name="text">
+        <string>Override in this configuration</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonClearOverride">
+       <property name="text">
+        <string>Clear configuration override</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonRestoreFactory">
+       <property name="text">
+        <string>Restore factory defaults</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>rqt_multiplot::MatchFilterComboBox</class>
+   <extends>QComboBox</extends>
+   <header location="global">rqt_multiplot/MatchFilterComboBox.hpp</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

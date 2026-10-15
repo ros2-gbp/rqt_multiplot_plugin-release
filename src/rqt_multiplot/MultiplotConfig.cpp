@@ -1,0 +1,800 @@
+/******************************************************************************
+ * Copyright (C) 2015 by Ralf Kaestner                                        *
+ * ralf.kaestner@gmail.com                                                    *
+ *                                                                            *
+ * This program is free software; you can redistribute it and/or modify       *
+ * it under the terms of the Lesser GNU General Public License as published by*
+ * the Free Software Foundation; either version 3 of the License, or          *
+ * (at your option) any later version.                                        *
+ *                                                                            *
+ * This program is distributed in the hope that it will be useful,            *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               *
+ * Lesser GNU General Public License for more details.                        *
+ *                                                                            *
+ * You should have received a copy of the Lesser GNU General Public License   *
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ ******************************************************************************/
+
+#include "rqt_multiplot/MultiplotConfig.hpp"
+
+#include <algorithm>
+
+#include "rqt_multiplot/Theme.hpp"
+#include "rqt_multiplot/TimeZoneUtil.hpp"
+#include "rqt_multiplot/UserPreferences.hpp"
+
+#include <QBuffer>
+#include <QByteArray>
+#include <QIODevice>
+#include <QRegularExpression>
+#include <QTimeZone>
+
+namespace rqt_multiplot {
+
+namespace {
+
+constexpr quint32 kTabsStreamMagic = 0x52544D31;
+constexpr auto kPreferencesStreamMarker = "__rtp_prefs_v2__";
+constexpr auto kTopicBrowserStreamMarker = "__rtp_topic_browser_v1__";
+constexpr auto kSidePanelStreamMarker = "__rtp_side_panel_v1__";
+constexpr quint64 kMaxStreamTabs = 256;
+constexpr auto kTimeZoneLocal = "local";
+constexpr auto kTimeZoneUtc = "utc";
+
+QString normalizeTimeZoneId(const QString& timeZoneId) {
+  const QString trimmed = timeZoneId.trimmed();
+  if (trimmed.isEmpty() || (trimmed == QLatin1String(kTimeZoneLocal))) {
+    return QString::fromLatin1(kTimeZoneLocal);
+  }
+  if (trimmed == QLatin1String(kTimeZoneUtc)) {
+    return QString::fromLatin1(kTimeZoneUtc);
+  }
+
+  const QTimeZone zone(trimmed.toUtf8());
+  if (zone.isValid()) {
+    return trimmed;
+  }
+
+  return QString::fromLatin1(kTimeZoneLocal);
+}
+
+QString sidePanelKey(MultiplotConfig::SidePanel panel) {
+  switch (panel) {
+    case MultiplotConfig::SidePanel::TopicBrowser:
+      return QStringLiteral("topic_browser");
+    case MultiplotConfig::SidePanel::CurveFilters:
+      return QStringLiteral("curve_filters");
+    case MultiplotConfig::SidePanel::None:
+    default:
+      return QStringLiteral("none");
+  }
+}
+
+MultiplotConfig::SidePanel sidePanelFromKey(const QString& key) {
+  if (key == QLatin1String("topic_browser")) {
+    return MultiplotConfig::SidePanel::TopicBrowser;
+  }
+  if (key == QLatin1String("curve_filters")) {
+    return MultiplotConfig::SidePanel::CurveFilters;
+  }
+  return MultiplotConfig::SidePanel::None;
+}
+
+MultiplotConfig::SidePanel sidePanelFromInt(qint32 value) {
+  if (value == static_cast<qint32>(MultiplotConfig::SidePanel::TopicBrowser)) {
+    return MultiplotConfig::SidePanel::TopicBrowser;
+  }
+  if (value == static_cast<qint32>(MultiplotConfig::SidePanel::CurveFilters)) {
+    return MultiplotConfig::SidePanel::CurveFilters;
+  }
+  return MultiplotConfig::SidePanel::None;
+}
+
+}  // namespace
+
+MultiplotConfig::MultiplotConfig(QObject* parent)
+    : Config(parent),
+      currentTabIndex_(0),
+      timeZoneId_(QString::fromLatin1(kTimeZoneLocal)),
+      themeId_(QString::fromLatin1(Theme::kLightId)),
+      openGLCanvasEnabled_(false),
+      plotTitleStyle_(PlotTitleStyle::factory()),
+      preferencesOverridden_(false),
+      sidePanel_(SidePanel::None),
+      sidePanelWidth_(kDefaultSidePanelWidth) {
+  createTab("Tab 1");
+  applyUserDefaults();
+}
+
+MultiplotConfig::~MultiplotConfig() = default;
+
+size_t MultiplotConfig::getNumTabs() const {
+  return static_cast<size_t>(tableConfigs_.count());
+}
+
+PlotTableConfig* MultiplotConfig::getTableConfig(size_t index) const {
+  if (index < getNumTabs()) {
+    return tableConfigs_[static_cast<int>(index)];
+  }
+
+  return nullptr;
+}
+
+PlotTableConfig* MultiplotConfig::addTab() {
+  PlotTableConfig* table = createTab(nextTabTitle());
+  applyThemeColorsTo(table);
+  const size_t index = getNumTabs() - 1;
+
+  emit tabAdded(index);
+  setCurrentTabIndex(index);
+  emit changed();
+
+  return table;
+}
+
+void MultiplotConfig::removeTab(size_t index) {
+  if ((getNumTabs() <= 1) || (index >= getNumTabs())) {
+    return;
+  }
+
+  PlotTableConfig* table = tableConfigs_.takeAt(static_cast<int>(index));
+
+  if (currentTabIndex_ >= getNumTabs()) {
+    currentTabIndex_ = getNumTabs() - 1;
+  } else if (index < currentTabIndex_) {
+    --currentTabIndex_;
+  }
+
+  emit tabRemoved(index);
+  disconnect(table, nullptr, this, nullptr);
+  delete table;
+  emit currentTabIndexChanged(currentTabIndex_);
+  emit changed();
+}
+
+void MultiplotConfig::setTabTitle(size_t index, const QString& title) const {
+  PlotTableConfig* table = getTableConfig(index);
+  if ((table == nullptr) || title.trimmed().isEmpty()) {
+    return;
+  }
+
+  table->setTitle(title);
+}
+
+size_t MultiplotConfig::getCurrentTabIndex() const {
+  return currentTabIndex_;
+}
+
+void MultiplotConfig::setCurrentTabIndex(size_t index) {
+  if (getNumTabs() == 0) {
+    return;
+  }
+
+  if (index >= getNumTabs()) {
+    index = getNumTabs() - 1;
+  }
+
+  if (index != currentTabIndex_) {
+    currentTabIndex_ = index;
+    emit currentTabIndexChanged(currentTabIndex_);
+    emit changed();
+  }
+}
+
+void MultiplotConfig::setTimeZoneId(const QString& timeZoneId) {
+  const QString normalized = normalizeTimeZoneId(timeZoneId);
+  if (normalized == timeZoneId_) {
+    return;
+  }
+
+  timeZoneId_ = normalized;
+  emit timezoneChanged(timeZoneId_);
+  emit changed();
+}
+
+QString MultiplotConfig::getTimeZoneId() const {
+  return timeZoneId_;
+}
+
+QTimeZone MultiplotConfig::timeZone() const {
+  if (timeZoneId_ == QLatin1String(kTimeZoneLocal)) {
+    return TimeZoneUtil::localTimeZone();
+  }
+  if (timeZoneId_ == QLatin1String(kTimeZoneUtc)) {
+    return QTimeZone::utc();
+  }
+
+  const QTimeZone zone(timeZoneId_.toUtf8());
+  if (zone.isValid()) {
+    return zone;
+  }
+
+  return TimeZoneUtil::localTimeZone();
+}
+
+void MultiplotConfig::setThemeId(const QString& themeId) {
+  const QString normalized = Theme::toId(Theme::fromId(themeId));
+  if (normalized == themeId_) {
+    applyThemeColors();
+    return;
+  }
+
+  themeId_ = normalized;
+  applyThemeColors();
+  emit themeChanged(themeId_);
+  emit changed();
+}
+
+QString MultiplotConfig::getThemeId() const {
+  return themeId_;
+}
+
+void MultiplotConfig::setOpenGLCanvasEnabled(bool enabled) {
+  if (enabled == openGLCanvasEnabled_) {
+    return;
+  }
+
+  openGLCanvasEnabled_ = enabled;
+  emit openGLCanvasChanged(openGLCanvasEnabled_);
+  emit changed();
+}
+
+bool MultiplotConfig::isOpenGLCanvasEnabled() const {
+  return openGLCanvasEnabled_;
+}
+
+void MultiplotConfig::setPlotTitleStyle(const PlotTitleStyle& style) {
+  PlotTitleStyle normalized = style;
+  normalized.fontSize = PlotTitleStyle::clampFontSize(normalized.fontSize);
+  if (!normalized.customColor.isValid()) {
+    normalized.customColor = PlotTitleStyle::factory().customColor;
+  }
+  if (normalized == plotTitleStyle_) {
+    return;
+  }
+
+  plotTitleStyle_ = normalized;
+  emit plotTitleStyleChanged(plotTitleStyle_);
+  emit changed();
+}
+
+PlotTitleStyle MultiplotConfig::plotTitleStyle() const {
+  return plotTitleStyle_;
+}
+
+void MultiplotConfig::setSidePanel(SidePanel panel) {
+  if (panel == sidePanel_) {
+    return;
+  }
+
+  sidePanel_ = panel;
+  emit sidePanelChanged(panel);
+  emit changed();
+}
+
+MultiplotConfig::SidePanel MultiplotConfig::getSidePanel() const {
+  return sidePanel_;
+}
+
+void MultiplotConfig::toggleSidePanel(SidePanel panel) {
+  setSidePanel((sidePanel_ == panel) ? SidePanel::None : panel);
+}
+
+void MultiplotConfig::setTopicBrowserVisible(bool visible) {
+  if (visible) {
+    setSidePanel(SidePanel::TopicBrowser);
+  } else if (sidePanel_ == SidePanel::TopicBrowser) {
+    setSidePanel(SidePanel::None);
+  }
+}
+
+bool MultiplotConfig::isTopicBrowserVisible() const {
+  return sidePanel_ == SidePanel::TopicBrowser;
+}
+
+void MultiplotConfig::setSidePanelWidth(int width) {
+  if (width == sidePanelWidth_) {
+    return;
+  }
+
+  sidePanelWidth_ = width;
+  emit sidePanelWidthChanged(width);
+  emit changed();
+}
+
+int MultiplotConfig::getSidePanelWidth() const {
+  return sidePanelWidth_;
+}
+
+void MultiplotConfig::loadSidePanelState(QSettings& settings) {
+  if (settings.contains(QStringLiteral("side_panel"))) {
+    setSidePanel(sidePanelFromKey(settings.value(QStringLiteral("side_panel")).toString()));
+  } else {
+    const bool legacyVisible = settings.value(QStringLiteral("topic_browser_visible"), false).toBool();
+    setSidePanel(legacyVisible ? SidePanel::TopicBrowser : SidePanel::None);
+  }
+
+  const QVariant legacyWidth = settings.value(QStringLiteral("topic_browser_width"), kDefaultSidePanelWidth);
+  setSidePanelWidth(settings.value(QStringLiteral("side_panel_width"), legacyWidth).toInt());
+}
+
+bool MultiplotConfig::isPreferencesOverridden() const {
+  return preferencesOverridden_;
+}
+
+void MultiplotConfig::setPreferencesOverridden(bool overridden) {
+  if (overridden == preferencesOverridden_) {
+    return;
+  }
+
+  preferencesOverridden_ = overridden;
+  emit changed();
+}
+
+void MultiplotConfig::applyUserDefaults() {
+  const UserPreferences prefs = UserPreferences::load();
+  setTimeZoneId(prefs.timeZoneId);
+  setThemeId(prefs.themeId);
+  setOpenGLCanvasEnabled(prefs.openGLCanvasEnabled);
+  setPlotTitleStyle(prefs.plotTitleStyle);
+}
+
+void MultiplotConfig::save(QSettings& settings) const {
+  if (preferencesOverridden_) {
+    settings.setValue("time_zone", timeZoneId_);
+    settings.setValue("theme", themeId_);
+    settings.setValue("opengl_canvas", openGLCanvasEnabled_);
+    settings.setValue("plot_title_font_size", plotTitleStyle_.fontSize);
+    settings.setValue("plot_title_bold", plotTitleStyle_.bold);
+    settings.setValue("plot_title_auto_color", plotTitleStyle_.autoColor);
+    settings.setValue("plot_title_color", plotTitleStyle_.customColor.name());
+  } else {
+    settings.remove("time_zone");
+    settings.remove("theme");
+    settings.remove("opengl_canvas");
+    settings.remove("plot_title_font_size");
+    settings.remove("plot_title_bold");
+    settings.remove("plot_title_auto_color");
+    settings.remove("plot_title_color");
+  }
+  settings.setValue("current_tab", static_cast<uint>(currentTabIndex_));
+  settings.remove("topic_browser_visible");
+  settings.remove("topic_browser_width");
+  settings.setValue("side_panel", sidePanelKey(sidePanel_));
+  settings.setValue("side_panel_width", sidePanelWidth_);
+  settings.beginGroup("tabs");
+
+  for (int index = 0; index < tableConfigs_.count(); ++index) {
+    settings.beginGroup("tab_" + QString::number(index));
+    tableConfigs_[index]->save(settings);
+    settings.endGroup();
+  }
+
+  settings.endGroup();
+}
+
+void MultiplotConfig::load(QSettings& settings) {
+  const bool hasPreferenceOverride =
+      settings.contains(QStringLiteral("time_zone")) || settings.contains(QStringLiteral("theme")) ||
+      settings.contains(QStringLiteral("opengl_canvas")) || settings.contains(QStringLiteral("plot_title_font_size")) ||
+      settings.contains(QStringLiteral("plot_title_bold")) || settings.contains(QStringLiteral("plot_title_auto_color")) ||
+      settings.contains(QStringLiteral("plot_title_color"));
+  const QStringList groups = settings.childGroups();
+  if (groups.contains("tabs")) {
+    loadTabs(settings);
+  } else if (groups.contains("table")) {
+    loadLegacyTable(settings);
+  } else {
+    reset();
+    return;
+  }
+
+  loadSidePanelState(settings);
+  preferencesOverridden_ = hasPreferenceOverride;
+  if (hasPreferenceOverride) {
+    timeZoneId_ = normalizeTimeZoneId(settings.value(QStringLiteral("time_zone"), QString::fromLatin1(kTimeZoneLocal)).toString());
+    themeId_ = Theme::toId(Theme::fromId(settings.value(QStringLiteral("theme"), QString::fromLatin1(Theme::kLightId)).toString()));
+    openGLCanvasEnabled_ = settings.value(QStringLiteral("opengl_canvas"), false).toBool();
+    PlotTitleStyle loadedStyle = PlotTitleStyle::factory();
+    loadedStyle.fontSize =
+        PlotTitleStyle::clampFontSize(settings.value(QStringLiteral("plot_title_font_size"), loadedStyle.fontSize).toInt());
+    loadedStyle.bold = settings.value(QStringLiteral("plot_title_bold"), loadedStyle.bold).toBool();
+    loadedStyle.autoColor = settings.value(QStringLiteral("plot_title_auto_color"), loadedStyle.autoColor).toBool();
+    loadedStyle.customColor = QColor(settings.value(QStringLiteral("plot_title_color"), loadedStyle.customColor.name()).toString());
+    if (!loadedStyle.customColor.isValid()) {
+      loadedStyle.customColor = PlotTitleStyle::factory().customColor;
+    }
+    plotTitleStyle_ = loadedStyle;
+  } else {
+    applyUserDefaults();
+  }
+
+  applyThemeColors();
+  emit timezoneChanged(timeZoneId_);
+  emit themeChanged(themeId_);
+  emit openGLCanvasChanged(openGLCanvasEnabled_);
+  emit plotTitleStyleChanged(plotTitleStyle_);
+}
+
+void MultiplotConfig::reset() {
+  const QVector<PlotTableConfig*> previous = takeTabs();
+  createTab("Tab 1");
+  currentTabIndex_ = 0;
+  preferencesOverridden_ = false;
+  setSidePanel(SidePanel::None);
+  setSidePanelWidth(kDefaultSidePanelWidth);
+  applyUserDefaults();
+
+  emit tabsChanged();
+  emit currentTabIndexChanged(0);
+  deleteTabs(previous);
+  emit changed();
+}
+
+void MultiplotConfig::write(QDataStream& stream) const {
+  stream << kTabsStreamMagic;
+  stream << static_cast<quint64>(getNumTabs());
+  stream << static_cast<quint64>(currentTabIndex_);
+
+  for (PlotTableConfig* table : tableConfigs_) {
+    table->write(stream);
+  }
+
+  stream << QString::fromLatin1(kPreferencesStreamMarker);
+  stream << preferencesOverridden_;
+  if (preferencesOverridden_) {
+    stream << timeZoneId_;
+    stream << themeId_;
+    stream << openGLCanvasEnabled_;
+    stream << plotTitleStyle_.fontSize;
+    stream << plotTitleStyle_.bold;
+    stream << plotTitleStyle_.autoColor;
+    stream << plotTitleStyle_.customColor.name();
+  }
+
+  stream << QString::fromLatin1(kSidePanelStreamMarker);
+  stream << static_cast<qint32>(sidePanel_);
+  stream << static_cast<qint32>(sidePanelWidth_);
+}
+
+void MultiplotConfig::readSidePanelState(QDataStream& stream) {
+  if (stream.atEnd()) {
+    return;
+  }
+
+  QString marker;
+  qint32 width = kDefaultSidePanelWidth;
+  stream >> marker;
+  if (marker == QLatin1String(kSidePanelStreamMarker)) {
+    qint32 panel = 0;
+    stream >> panel >> width;
+    if (stream.status() == QDataStream::Ok) {
+      setSidePanel(sidePanelFromInt(panel));
+      setSidePanelWidth(width);
+    }
+  } else if (marker == QLatin1String(kTopicBrowserStreamMarker)) {
+    bool visible = false;
+    stream >> visible >> width;
+    if (stream.status() == QDataStream::Ok) {
+      setSidePanel(visible ? SidePanel::TopicBrowser : SidePanel::None);
+      setSidePanelWidth(width);
+    }
+  }
+}
+
+void MultiplotConfig::read(QDataStream& stream) {
+  QIODevice* const device = stream.device();
+  if (device == nullptr) {
+    reset();
+    return;
+  }
+
+  const QByteArray payload = device->readAll();
+  QBuffer tabbedBuffer;
+  tabbedBuffer.setData(payload);
+  tabbedBuffer.open(QIODevice::ReadWrite);
+
+  QDataStream in(&tabbedBuffer);
+  in.setVersion(stream.version());
+  in.setByteOrder(stream.byteOrder());
+  in.setFloatingPointPrecision(stream.floatingPointPrecision());
+
+  setSidePanel(SidePanel::None);
+  setSidePanelWidth(kDefaultSidePanelWidth);
+
+  quint32 magic = 0;
+  in >> magic;
+  if ((in.status() == QDataStream::Ok) && (magic == kTabsStreamMagic)) {
+    quint64 numTabs = 0;
+    quint64 currentTabIndex = 0;
+    in >> numTabs >> currentTabIndex;
+    replaceTabsFromStream(in, numTabs, currentTabIndex);
+    if (!in.atEnd()) {
+      QString marker;
+      in >> marker;
+      if (marker == QLatin1String(kPreferencesStreamMarker)) {
+        bool loadedOverride = false;
+        in >> loadedOverride;
+        preferencesOverridden_ = loadedOverride;
+        if (loadedOverride) {
+          QString loadedTimeZoneId;
+          QString loadedThemeId;
+          bool loadedOpenGL = false;
+          in >> loadedTimeZoneId >> loadedThemeId >> loadedOpenGL;
+          setTimeZoneId(loadedTimeZoneId);
+          setThemeId(loadedThemeId);
+          setOpenGLCanvasEnabled(loadedOpenGL);
+          if (!in.atEnd()) {
+            PlotTitleStyle loadedStyle = PlotTitleStyle::factory();
+            int loadedFontSize = loadedStyle.fontSize;
+            bool loadedBold = loadedStyle.bold;
+            bool loadedAutoColor = loadedStyle.autoColor;
+            QString loadedColorName;
+            in >> loadedFontSize >> loadedBold >> loadedAutoColor >> loadedColorName;
+            loadedStyle.fontSize = PlotTitleStyle::clampFontSize(loadedFontSize);
+            loadedStyle.bold = loadedBold;
+            loadedStyle.autoColor = loadedAutoColor;
+            loadedStyle.customColor = QColor(loadedColorName);
+            if (!loadedStyle.customColor.isValid()) {
+              loadedStyle.customColor = PlotTitleStyle::factory().customColor;
+            }
+            setPlotTitleStyle(loadedStyle);
+          } else {
+            setPlotTitleStyle(PlotTitleStyle::factory());
+          }
+        } else {
+          applyUserDefaults();
+        }
+        readSidePanelState(in);
+      } else {
+        preferencesOverridden_ = true;
+        setTimeZoneId(marker);
+        QString loadedThemeId = QString::fromLatin1(Theme::kLightId);
+        if (!in.atEnd()) {
+          in >> loadedThemeId;
+        }
+        setThemeId(loadedThemeId);
+        bool loadedOpenGL = false;
+        if (!in.atEnd()) {
+          in >> loadedOpenGL;
+        }
+        setOpenGLCanvasEnabled(loadedOpenGL);
+      }
+    } else {
+      preferencesOverridden_ = false;
+      applyUserDefaults();
+    }
+    return;
+  }
+
+  QBuffer legacyBuffer;
+  legacyBuffer.setData(payload);
+  legacyBuffer.open(QIODevice::ReadWrite);
+  QDataStream legacy(&legacyBuffer);
+  legacy.setVersion(stream.version());
+  legacy.setByteOrder(stream.byteOrder());
+  legacy.setFloatingPointPrecision(stream.floatingPointPrecision());
+  replaceWithLegacyTableStream(legacy);
+}
+
+MultiplotConfig& MultiplotConfig::operator=(const MultiplotConfig& src) {
+  if (this == &src) {
+    return *this;
+  }
+
+  const QVector<PlotTableConfig*> previous = takeTabs();
+  for (PlotTableConfig* srcTable : src.tableConfigs_) {
+    PlotTableConfig* table = createTab(srcTable->getTitle());
+    *table = *srcTable;
+  }
+  if (tableConfigs_.isEmpty()) {
+    createTab("Tab 1");
+  }
+
+  currentTabIndex_ = src.currentTabIndex_;
+  if (currentTabIndex_ >= getNumTabs()) {
+    currentTabIndex_ = getNumTabs() - 1;
+  }
+  timeZoneId_ = src.timeZoneId_;
+  themeId_ = src.themeId_;
+  openGLCanvasEnabled_ = src.openGLCanvasEnabled_;
+  plotTitleStyle_ = src.plotTitleStyle_;
+  preferencesOverridden_ = src.preferencesOverridden_;
+  setSidePanel(src.sidePanel_);
+  setSidePanelWidth(src.sidePanelWidth_);
+  applyThemeColors();
+
+  emit tabsChanged();
+  emit currentTabIndexChanged(currentTabIndex_);
+  emit timezoneChanged(timeZoneId_);
+  emit themeChanged(themeId_);
+  emit openGLCanvasChanged(openGLCanvasEnabled_);
+  emit plotTitleStyleChanged(plotTitleStyle_);
+  deleteTabs(previous);
+  emit changed();
+
+  return *this;
+}
+
+PlotTableConfig* MultiplotConfig::createTab(const QString& title) {
+  auto* table = new PlotTableConfig(this);
+  table->setTitle(title);
+  connectTable(table);
+  tableConfigs_.append(table);
+  return table;
+}
+
+void MultiplotConfig::applyThemeColorsTo(PlotTableConfig* table) const {
+  if (table == nullptr) {
+    return;
+  }
+
+  const Theme::Id id = Theme::fromId(themeId_);
+  table->setBackgroundColor(Theme::plotBackground(id));
+  table->setForegroundColor(Theme::plotForeground(id));
+}
+
+void MultiplotConfig::applyThemeColors() {
+  for (PlotTableConfig* table : tableConfigs_) {
+    applyThemeColorsTo(table);
+  }
+}
+
+QVector<PlotTableConfig*> MultiplotConfig::takeTabs() {
+  const QVector<PlotTableConfig*> tabs = tableConfigs_;
+  tableConfigs_.clear();
+  return tabs;
+}
+
+void MultiplotConfig::deleteTabs(const QVector<PlotTableConfig*>& tabs) {
+  for (PlotTableConfig* table : tabs) {
+    disconnect(table, nullptr, this, nullptr);
+    delete table;
+  }
+}
+
+void MultiplotConfig::connectTable(PlotTableConfig* table) {
+  connect(table, SIGNAL(changed()), this, SLOT(tableConfigChanged()));
+  connect(table, SIGNAL(titleChanged(const QString&)), this, SLOT(tableTitleChanged(const QString&)));
+}
+
+QString MultiplotConfig::nextTabTitle() const {
+  for (int number = 1;; ++number) {
+    const QString title = QString("Tab %1").arg(number);
+    bool taken = false;
+
+    for (const PlotTableConfig* table : tableConfigs_) {
+      if (table->getTitle() == title) {
+        taken = true;
+        break;
+      }
+    }
+
+    if (!taken) {
+      return title;
+    }
+  }
+}
+
+int MultiplotConfig::tabGroupIndex(const QString& group) {
+  const QRegularExpression pattern("^tab_(\\d+)$");
+  const QRegularExpressionMatch match = pattern.match(group);
+  if (!match.hasMatch()) {
+    return -1;
+  }
+
+  return match.captured(1).toInt();
+}
+
+void MultiplotConfig::loadTabs(QSettings& settings) {
+  const int currentTab = settings.value("current_tab", 0).toInt();
+
+  settings.beginGroup("tabs");
+  QStringList groups = settings.childGroups();
+  std::sort(groups.begin(), groups.end(), [](const QString& lhs, const QString& rhs) { return tabGroupIndex(lhs) < tabGroupIndex(rhs); });
+
+  const QVector<PlotTableConfig*> previous = takeTabs();
+
+  for (const QString& group : groups) {
+    if (tabGroupIndex(group) < 0) {
+      continue;
+    }
+
+    settings.beginGroup(group);
+    PlotTableConfig* table = createTab("Tab 1");
+    table->load(settings);
+    settings.endGroup();
+  }
+
+  settings.endGroup();
+
+  if (tableConfigs_.isEmpty()) {
+    createTab("Tab 1");
+  }
+
+  currentTabIndex_ = 0;
+  if ((currentTab > 0) && (static_cast<size_t>(currentTab) < getNumTabs())) {
+    currentTabIndex_ = static_cast<size_t>(currentTab);
+  }
+
+  emit tabsChanged();
+  emit currentTabIndexChanged(currentTabIndex_);
+  deleteTabs(previous);
+  emit changed();
+}
+
+void MultiplotConfig::loadLegacyTable(QSettings& settings) {
+  const QVector<PlotTableConfig*> previous = takeTabs();
+  PlotTableConfig* table = createTab("Tab 1");
+
+  settings.beginGroup("table");
+  table->load(settings);
+  settings.endGroup();
+
+  table->setTitle("Tab 1");
+  currentTabIndex_ = 0;
+
+  emit tabsChanged();
+  emit currentTabIndexChanged(0);
+  deleteTabs(previous);
+  emit changed();
+}
+
+void MultiplotConfig::replaceTabsFromStream(QDataStream& stream, quint64 numTabs, quint64 currentTabIndex) {
+  if (numTabs > kMaxStreamTabs) {
+    numTabs = 0;
+  }
+
+  const QVector<PlotTableConfig*> previous = takeTabs();
+  for (quint64 index = 0; index < numTabs; ++index) {
+    createTab(nextTabTitle())->read(stream);
+  }
+
+  if (tableConfigs_.isEmpty()) {
+    createTab("Tab 1");
+  }
+
+  currentTabIndex_ = 0;
+  if (currentTabIndex < getNumTabs()) {
+    currentTabIndex_ = static_cast<size_t>(currentTabIndex);
+  }
+
+  emit tabsChanged();
+  emit currentTabIndexChanged(currentTabIndex_);
+  deleteTabs(previous);
+  emit changed();
+}
+
+void MultiplotConfig::replaceWithLegacyTableStream(QDataStream& stream) {
+  const QVector<PlotTableConfig*> previous = takeTabs();
+  PlotTableConfig* table = createTab("Tab 1");
+  table->read(stream);
+  table->setTitle("Tab 1");
+  currentTabIndex_ = 0;
+  themeId_ = QString::fromLatin1(Theme::kLightId);
+  openGLCanvasEnabled_ = false;
+  applyThemeColors();
+
+  emit tabsChanged();
+  emit currentTabIndexChanged(0);
+  emit openGLCanvasChanged(false);
+  deleteTabs(previous);
+  emit changed();
+}
+
+void MultiplotConfig::tableConfigChanged() {
+  emit changed();
+}
+
+void MultiplotConfig::tableTitleChanged(const QString& title) {
+  auto* table = qobject_cast<PlotTableConfig*>(sender());
+  for (int index = 0; index < tableConfigs_.count(); ++index) {
+    if (tableConfigs_[index] == table) {
+      emit tabTitleChanged(static_cast<size_t>(index), title);
+      return;
+    }
+  }
+}
+
+}  // namespace rqt_multiplot
