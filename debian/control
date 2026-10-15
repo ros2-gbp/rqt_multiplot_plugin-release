@@ -1,0 +1,12 @@
+Source: ros-rolling-rqt-multiplot
+Section: misc
+Priority: optional
+Maintainer: "Samuel Bachmann" <sbachmann@anybotics.com>
+Build-Depends: debhelper (>= 9.0.0), clang-tidy <!nocheck>, libboost-dev, qt6-base-dev, qt6-svg-dev, ros-rolling-ament-cmake, ros-rolling-ament-cmake-clang-format <!nocheck>, ros-rolling-ament-cmake-gtest <!nocheck>, ros-rolling-ament-index-cpp, ros-rolling-builtin-interfaces <!nocheck>, ros-rolling-diagnostic-msgs <!nocheck>, ros-rolling-fastcdr, ros-rolling-geometry-msgs <!nocheck>, ros-rolling-pluginlib, ros-rolling-qt-gui-cpp, ros-rolling-rcl, ros-rolling-rclcpp, ros-rolling-rmw-cyclonedds-cpp <!nocheck>, ros-rolling-rmw-fastrtps-cpp <!nocheck>, ros-rolling-rmw-zenoh-cpp <!nocheck>, ros-rolling-ros-babel-fish, ros-rolling-rosbag2-cpp, ros-rolling-rosbag2-storage, ros-rolling-rosbag2-storage-default-plugins, ros-rolling-rosbag2-storage-mcap, ros-rolling-rosbag2-storage-mcap <!nocheck>, ros-rolling-rosidl-buffer, ros-rolling-rosidl-runtime-c, ros-rolling-rosidl-runtime-cpp, ros-rolling-rosidl-typesupport-fastrtps-cpp, ros-rolling-rosidl-typesupport-introspection-cpp, ros-rolling-rqt-gui, ros-rolling-rqt-gui-cpp, ros-rolling-sensor-msgs <!nocheck>, ros-rolling-std-msgs <!nocheck>, ros-rolling-test-msgs <!nocheck>, ros-rolling-type-description-interfaces, ros-rolling-ros-workspace
+Homepage: https://index.ros.org/p/rqt_multiplot/#rolling
+Standards-Version: 3.9.2
+
+Package: ros-rolling-rqt-multiplot
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-dev, qt6-base-dev, qt6-svg-dev, ros-rolling-ament-index-cpp, ros-rolling-diagnostic-msgs, ros-rolling-fastcdr, ros-rolling-geometry-msgs, ros-rolling-pluginlib, ros-rolling-qt-gui-cpp, ros-rolling-rcl, ros-rolling-rclcpp, ros-rolling-rclpy, ros-rolling-ros-babel-fish, ros-rolling-rosbag2-cpp, ros-rolling-rosbag2-storage, ros-rolling-rosbag2-storage-default-plugins, ros-rolling-rosbag2-storage-mcap, ros-rolling-rosidl-buffer, ros-rolling-rosidl-runtime-c, ros-rolling-rosidl-runtime-cpp, ros-rolling-rosidl-typesupport-fastrtps-cpp, ros-rolling-rosidl-typesupport-introspection-cpp, ros-rolling-rqt-gui, ros-rolling-rqt-gui-cpp, ros-rolling-sensor-msgs, ros-rolling-std-msgs, ros-rolling-type-description-interfaces, ros-rolling-ros-workspace
+Description: rqt_multiplot provides a GUI plugin for visualizing numeric values in multiple 2D plots using the Qwt plotting backend.
